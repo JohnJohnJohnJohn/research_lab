@@ -18,19 +18,17 @@ This document orients every agent that works on this repository. Read it after `
 
 ## Current Build Phase
 
-**v0.1 in progress — `lab.md`, Director prompt, and EODHD MCP complete.**
+**v0.1 in progress — regional analyst prompts and root `.env.example` complete.**
 
-Remaining v0.1 scope per SPEC.md §15: `coverage.md` v1, peer_regression skill, US analyst prompt, single-stock memo end-to-end via Slack bridge.
+Remaining v0.1 scope per SPEC.md §15: `coverage.md` v1, specialist prompts (macro, sector, valuation, risk), peer_regression skill, `lab.py` boot + Slack bridge.
 
 ## Next Highest-Leverage Artifacts
 
-From SPEC.md §17 (updated):
-
-1. ~~**`lab.md` v0.1**~~ — **done** (v0.1.0).
-2. ~~**Director system prompt**~~ — **done** (v0.1.0).
-3. ~~**EODHD wrapped as the first MCP**~~ — **done** (v0.1.0, 2026-05-27).
-
-Also required for v0.1: **`coverage.md` v1**, **US regional analyst prompt**, **peer_regression skill**, then **lab.py wiring**.
+1. ~~Regional analyst prompts (US, HK, China A/H)~~ — **done** (v0.1.0, 2026-05-27).
+2. **Specialist prompts** (macro, sector, valuation, risk) — unblock Phase 1 macro handoff and Sections 5–8.
+3. **`coverage.md` v1** — active context for end-to-end runs.
+4. **`peer_regression` skill** — Phase 1 peer regression execution.
+5. **`lab.py` v0.1 boot** — wire MCP, agents, Slack bridge.
 
 ## Open Items
 
@@ -62,6 +60,16 @@ Architectural decisions made beyond what SPEC.md specifies, with rationale.
 | v0.1.0 EODHD MCP | EODHD search returns 403 on demo key; mapped to structured `not_found` error. | EODHD documents search as unavailable on demo; agents get explicit fallback guidance. |
 | v0.1.0 EODHD MCP | Template pattern: `client.py` (HTTP + typed exceptions) + `server.py` (tools + shaping + error dicts) + README + `.env.example`, stdio only. | First MCP server; subsequent servers (Bloomberg, EDGAR, etc.) should replicate unless logged deviation. |
 | v0.1.0 EODHD MCP | No existing EODHD fetcher in repo; implemented direct REST wrapper. | SPEC §5.5 references external fetcher but none present in repo at build time. |
+| v0.1.0 Regional | Three regional prompts share identical 7-section structure; region-specific content only in §3a, §4b, §7. | Task requirement; enables consistent Director handoff and future maintenance. |
+| v0.1.0 Regional | MCP tool names (`get_price_history`, etc.) referenced as standard market data capability tools, not vendor names. | Aligns with lab.md tier language and task constraint. |
+| v0.1.0 Regional | Exchange-specific guidance in §7 (Stock Connect eligibility, CSRC/controlling shareholder, policy bodies) is operational checklist detail, not new lab.md doctrine. | Task-authorized §7 additions; proposed lab.md §3 patch below if human wants doctrine-level encoding. |
+
+### Proposed lab.md §3 edits (not applied — human confirmation required)
+
+| Region | Proposed addition | Rationale |
+|--------|-------------------|-----------|
+| Hong Kong | Add explicit Stock Connect **eligibility** check alongside southbound flow | Prompt §7 operational detail; lab.md §3 mentions flow but not eligibility |
+| China A/H | Add explicit controlling-shareholder lookup via regulatory filings | Prompt §7 detail; lab.md §3 covers state ownership generically |
 
 ## Changelog
 
@@ -71,3 +79,4 @@ Architectural decisions made beyond what SPEC.md specifies, with rationale.
 | 2026-05-27 | Mandate agent | Authored lab.md v0.1.0 — full research mandate replacing stub. |
 | 2026-05-27 | Director prompt agent | Authored prompts/director.md v0.1.0 — full Director system prompt replacing stub. |
 | 2026-05-27 | EODHD MCP agent | Implemented mcp_servers/eodhd/ — first MCP server (stdio, four tools). |
+| 2026-05-27 | Regional prompts agent | Authored US/HK/China A/H regional analyst prompts v0.1.0; root .env.example. |
