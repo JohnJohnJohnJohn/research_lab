@@ -18,14 +18,14 @@ This document orients every agent that works on this repository. Read it after `
 
 ## Current Build Phase
 
-**v0.1 in progress — regional analyst prompts and root `.env.example` complete.**
+**v0.1 in progress — specialist prompts complete.**
 
-Remaining v0.1 scope per SPEC.md §15: `coverage.md` v1, specialist prompts (macro, sector, valuation, risk), peer_regression skill, `lab.py` boot + Slack bridge.
+Remaining v0.1 scope per SPEC.md §15: `coverage.md` v1, peer_regression skill, `lab.py` boot + Slack bridge.
 
 ## Next Highest-Leverage Artifacts
 
-1. ~~Regional analyst prompts (US, HK, China A/H)~~ — **done** (v0.1.0, 2026-05-27).
-2. **Specialist prompts** (macro, sector, valuation, risk) — unblock Phase 1 macro handoff and Sections 5–8.
+1. ~~Regional analyst prompts (US, HK, China A/H)~~ — **done** (v0.1.0).
+2. ~~Specialist prompts (macro, sector, valuation, risk)~~ — **done** (v0.1.0, 2026-05-27).
 3. **`coverage.md` v1** — active context for end-to-end runs.
 4. **`peer_regression` skill** — Phase 1 peer regression execution.
 5. **`lab.py` v0.1 boot** — wire MCP, agents, Slack bridge.
@@ -63,6 +63,10 @@ Architectural decisions made beyond what SPEC.md specifies, with rationale.
 | v0.1.0 Regional | Three regional prompts share identical 7-section structure; region-specific content only in §3a, §4b, §7. | Task requirement; enables consistent Director handoff and future maintenance. |
 | v0.1.0 Regional | MCP tool names (`get_price_history`, etc.) referenced as standard market data capability tools, not vendor names. | Aligns with lab.md tier language and task constraint. |
 | v0.1.0 Regional | Exchange-specific guidance in §7 (Stock Connect eligibility, CSRC/controlling shareholder, policy bodies) is operational checklist detail, not new lab.md doctrine. | Task-authorized §7 additions; proposed lab.md §3 patch below if human wants doctrine-level encoding. |
+| v0.1.0 Specialists | Four specialist prompts share 5-section structure (Role, Input, Core Task, Output, Quality). | Consistent with regional prompt pattern; narrower scope per Director §3c. |
+| v0.1.0 Specialists | Valuation methodologies limited to DCF (`dcf_engine` skill per SPEC §5.5) + trading multiples aligned to FactorRegime. | SPEC does not define broader methodology set; no invented models. |
+| v0.1.0 Specialists | Macro output uses structured five-dimension tag object; aggregate confidence = lowest dimension confidence. | Task specification (truncated in onboarding); aligns with lab.md §4 macro signal input. |
+| v0.1.0 Specialists | Task onboarding message truncated at macro §4 output contract; completed from Director §3c + SPEC §8. | Logged for audit; output schemas inferred from handoff contracts. |
 
 ### Proposed lab.md §3 edits (not applied — human confirmation required)
 
