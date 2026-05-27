@@ -7,7 +7,7 @@ requires-python = ">=3.11"
 
 # Declared dependencies — intent only; versions not pinned at scaffold stage.
 dependencies = [
-    "openai-agents",
+    "openai-agents[litellm]",
     "anthropic",
     "mcp",
     "httpx",

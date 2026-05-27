@@ -18,16 +18,17 @@ This document orients every agent that works on this repository. Read it after `
 
 ## Current Build Phase
 
-**All prompt artifacts complete — `lab.py` v0.1 is next.**
+**`lab.py` v0.1 boot complete — next: `coverage.md` v1 or first end-to-end smoke test.**
 
-Remaining v0.1 scope per SPEC.md §15: `coverage.md` v1, `peer_regression` skill, `lab.py` boot + Slack bridge.
+Remaining v0.1 scope per SPEC.md §15: `coverage.md` v1, `peer_regression` skill, Slack bridge completion.
 
 ## Next Highest-Leverage Artifacts
 
 1. ~~All agent prompts (Director, regional, specialists, Coverage Agent)~~ — **done** (v0.1.0).
-2. **`lab.py` v0.1 boot** — wire prompts, MCPs, env vars, model selection, Slack bridge.
+2. ~~**`lab.py` v0.1 boot**~~ — **done** (v0.1.0): env, prompts, agents, EODHD MCP, local CLI.
 3. **`coverage.md` v1** — active context for end-to-end runs.
 4. **`peer_regression` skill** — Phase 1 peer regression execution.
+5. **Slack bridge** — complete `run_slack_mode()` / `handle_slack_message()` seam.
 
 ## Open Items
 
@@ -75,6 +76,12 @@ Architectural decisions made beyond what SPEC.md specifies, with rationale.
 | v0.1.0 Coverage | Drift detection runs on `post_phase1` invocation (after FactorRegime logged), not at pre-dispatch. | Director dispatch is Coverage Agent → Regional Phase 1; current FactorRegime unavailable at first injection. |
 | v0.1.0 Coverage | Coverage Agent creates `coverage_state/[TICKER]/` on first touch after memo publish. | SPEC §11 silent on who creates directory; Coverage Agent is owner per §11. |
 | v0.1.0 Coverage | `locked_sections.md` not in SPEC §13 — proposed addition for 📌 persistence across runs. | Director prompt handles locks within run; cross-run lock persistence needs storage. |
+| v0.1.0 lab.py | OpenAI Agents SDK + `LitellmProvider` via `RunConfig` for all roles. | SPEC §6 names LiteLLM adapter; `.env.example` uses `deepseek/`, `dashscope/`, `claude-*` model strings. |
+| v0.1.0 lab.py | Prompts loaded from disk at startup into in-memory dict; no templating engine. | Task constraint; Director gets `lab.md` + `coverage.md` appended to instructions. |
+| v0.1.0 lab.py | Slack bridge is stub only (`run_slack_mode`, `handle_slack_message`); local CLI is v0.1 entrypoint. | SPEC §7 full Socket Mode deferred; missing Slack vars must not block CLI. |
+| v0.1.0 lab.py | EODHD MCP via `MCPServerStdio` subprocess; attached to regional analysts + valuation + sector. | SPEC §5.1 self-describing MCP; boot wiring dict `CAPABILITIES` only. |
+| v0.1.0 lab.py | Director handoffs to all eight sub-agents; no multi-phase choreography in code. | Orchestration stays in Director prompt; boot only instantiates agents. |
+| v0.1.0 lab.py | `pyproject.toml` uses `openai-agents[litellm]` for multi-provider models. | Required for `.env.example` provider prefixes without scattering provider logic. |
 
 ### Proposed SPEC.md §13 edits (not applied — human confirmation required)
 
@@ -103,3 +110,4 @@ Architectural decisions made beyond what SPEC.md specifies, with rationale.
 | 2026-05-27 | Specialist prompts agent | Authored macro, sector, valuation, risk specialist prompts v0.1.0. |
 | 2026-05-27 | Specialist prompts agent | Revised specialist prompts to v0.1.1 per full task spec (verbatim output contracts). |
 | 2026-05-27 | Coverage Agent agent | Authored prompts/coverage/agent.md v0.1.0 — stateful name-scoped coverage memory. |
+| 2026-05-27 | lab.py boot agent | Implemented lab.py v0.1 — config, prompts, nine agents, EODHD MCP, local CLI. |
