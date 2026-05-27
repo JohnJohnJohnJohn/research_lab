@@ -67,13 +67,18 @@ Architectural decisions made beyond what SPEC.md specifies, with rationale.
 | v0.1.0 Specialists | Valuation methodologies limited to DCF (`dcf_engine` skill per SPEC §5.5) + trading multiples aligned to FactorRegime. | SPEC does not define broader methodology set; no invented models. |
 | v0.1.0 Specialists | Macro output uses structured five-dimension tag object; aggregate confidence = lowest dimension confidence. | Task specification (truncated in onboarding); aligns with lab.md §4 macro signal input. |
 | v0.1.0 Specialists | Task onboarding message truncated at macro §4 output contract; completed from Director §3c + SPEC §8. | Logged for audit; output schemas inferred from handoff contracts. |
+| v0.1.1 Specialists | Revised to full task spec: MacroRegimeTag, ValuationOutput, ScenarioOutput + RiskRegister verbatim formats. | User supplied complete onboarding; prior v0.1.0 used inferred JSON schemas. |
+| v0.1.1 Specialists | Valuation Engine emits conviction (BUY/HOLD/SELL) with default mapping; extends Director §3c handoff. | Full task assigns conviction to ValuationOutput; Director §3c lists price target only — Director synthesizes memo header. |
+| v0.1.1 Specialists | Valuation methodology selection (DCF/P-E, P/B/NAV, DDM/yield) driven by FactorRegime factors — proposed lab.md doctrine. | SPEC §5.5 names dcf_engine skill only; factor-driven method table from task, not yet in lab.md. |
+| v0.1.1 Specialists | Sector Expert uses fundamentals only; no price history per full task §3b. | Aligns with narrow specialist scope; peer regression remains Regional Analyst + Phase 1. |
 
-### Proposed lab.md §3 edits (not applied — human confirmation required)
+### Proposed lab.md edits (not applied — human confirmation required)
 
 | Region | Proposed addition | Rationale |
 |--------|-------------------|-----------|
 | Hong Kong | Add explicit Stock Connect **eligibility** check alongside southbound flow | Prompt §7 operational detail; lab.md §3 mentions flow but not eligibility |
 | China A/H | Add explicit controlling-shareholder lookup via regulatory filings | Prompt §7 detail; lab.md §3 covers state ownership generically |
+| Valuation (§2 or new) | Factor-driven methodology selection: earnings quality/growth → DCF or forward P/E; asset backing → P/B or NAV; yield → DDM or yield-spread | SPEC §5.5 names `dcf_engine` only; full specialist task defines selection table |
 
 ## Changelog
 
@@ -85,3 +90,4 @@ Architectural decisions made beyond what SPEC.md specifies, with rationale.
 | 2026-05-27 | EODHD MCP agent | Implemented mcp_servers/eodhd/ — first MCP server (stdio, four tools). |
 | 2026-05-27 | Regional prompts agent | Authored US/HK/China A/H regional analyst prompts v0.1.0; root .env.example. |
 | 2026-05-27 | Specialist prompts agent | Authored macro, sector, valuation, risk specialist prompts v0.1.0. |
+| 2026-05-27 | Specialist prompts agent | Revised specialist prompts to v0.1.1 per full task spec (verbatim output contracts). |
