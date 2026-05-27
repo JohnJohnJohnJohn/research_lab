@@ -1,0 +1,21 @@
+[project]
+name = "research_lab"
+version = "0.0.1"
+description = "Region-aware, fundamental-driven AI research organization (see SPEC.md)"
+readme = "README.md"
+requires-python = ">=3.11"
+
+# Declared dependencies — intent only; versions not pinned at scaffold stage.
+dependencies = [
+    "openai-agents",
+    "anthropic",
+    "mcp",
+    "pydantic",
+    "pandas",
+    "statsmodels",
+    "python-dotenv",
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
