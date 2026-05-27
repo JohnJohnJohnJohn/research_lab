@@ -184,4 +184,4 @@ Complete every item. Verify — do not skim.
 - **IFRS (HK):** flag cross-border audit constraints and disclosure gaps vs onshore filings
 - **Liquidity:** for small-cap HK listings, note average daily volume and impact on position sizing assumptions if relevant to thesis
 
-Record pass/fail or finding for each checklist item in Section 4 output.
+Record pass/fail or finding for **all** checklist items in Section 4 output.
