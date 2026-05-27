@@ -113,4 +113,5 @@ Director maps this to memo Sections 6 and 8.
 - On risk-only re-run (`prompts/director.md` §5c): update ScenarioOutput and RiskRegister only; preserve locked sections elsewhere.
 - Bear implied price should be ≤ base ≤ bull unless confidence is low — then use ranges and explain ordering in base driver.
 - RiskRegister entries must name the risk, not only describe a category — connect each to thesis, FactorRegime factor, or regional structural check from `lab.md` §3.
+- Probabilities are subjective judgment — not backtested frequencies (`lab.md` §1 non-goals).
 - Self-check `lab.md` §5 before returning.

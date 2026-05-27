@@ -79,3 +79,4 @@ If sector is **not** materially idiosyncratic: return a **one-line note** saying
 - On sector-only re-run (`prompts/director.md` §5c): update sector note and peer guidance only.
 - If called while Phase 1 is pending: limit output to peer set quality judgment and proposed comps — do not assert FactorRegime conclusions.
 - Do not invoke standard market data price tools — sector work is fundamentals and filing-grounded KPIs only (`prompts/director.md` specialist chain).
+- Return output even when sector complexity is low — a one-line "no material idiosyncrasy" response satisfies the contract.
