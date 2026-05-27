@@ -84,3 +84,4 @@ Architectural decisions made beyond what SPEC.md specifies, with rationale.
 | 2026-05-27 | Director prompt agent | Authored prompts/director.md v0.1.0 — full Director system prompt replacing stub. |
 | 2026-05-27 | EODHD MCP agent | Implemented mcp_servers/eodhd/ — first MCP server (stdio, four tools). |
 | 2026-05-27 | Regional prompts agent | Authored US/HK/China A/H regional analyst prompts v0.1.0; root .env.example. |
+| 2026-05-27 | Specialist prompts agent | Authored macro, sector, valuation, risk specialist prompts v0.1.0. |
