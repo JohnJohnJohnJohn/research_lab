@@ -18,19 +18,19 @@ This document orients every agent that works on this repository. Read it after `
 
 ## Current Build Phase
 
-**v0.1 in progress — `lab.md` v0.1 and Director system prompt complete.**
+**v0.1 in progress — `lab.md`, Director prompt, and EODHD MCP complete.**
 
-Remaining v0.1 scope per SPEC.md §15: `coverage.md` v1, EODHD MCP wrap, peer_regression skill, US analyst prompt, single-stock memo end-to-end via Slack bridge.
+Remaining v0.1 scope per SPEC.md §15: `coverage.md` v1, peer_regression skill, US analyst prompt, single-stock memo end-to-end via Slack bridge.
 
 ## Next Highest-Leverage Artifacts
 
 From SPEC.md §17 (updated):
 
-1. ~~**`lab.md` v0.1**~~ — **done** (v0.1.0, 2026-05-27).
-2. ~~**Director system prompt**~~ — **done** (v0.1.0, 2026-05-27).
-3. **EODHD wrapped as the first MCP** — fastest way to validate the capability pattern end-to-end on infrastructure already owned.
+1. ~~**`lab.md` v0.1**~~ — **done** (v0.1.0).
+2. ~~**Director system prompt**~~ — **done** (v0.1.0).
+3. ~~**EODHD wrapped as the first MCP**~~ — **done** (v0.1.0, 2026-05-27).
 
-Also required for v0.1: **`coverage.md` v1** (per SPEC.md §15, not listed in §17 but blocks end-to-end runs).
+Also required for v0.1: **`coverage.md` v1**, **US regional analyst prompt**, **peer_regression skill**, then **lab.py wiring**.
 
 ## Open Items
 
@@ -56,6 +56,12 @@ Architectural decisions made beyond what SPEC.md specifies, with rationale.
 | v0.1.0 Director | Tool failure retry: 2 retries then escalate. | Prevents silent infinite retry; aligns with lab.md honesty requirements. |
 | v0.1.0 Director | Dual-listed names: both regional analysts in parallel; Director synthesizes. | Task §3b; SPEC §3 implies regional layer but dual-list handling unspecified. |
 | v0.1.0 Director | Latent coverage re-touch: notify user when `coverage_state/` exists but name absent from `coverage.md`. | Task §3a; makes latent state visible per SPEC §3 latent Coverage Agent model. |
+| v0.1.0 EODHD MCP | Async + httpx throughout client and server. | MCP Python SDK (FastMCP) is async-native; avoids mixed sync/async call chains. |
+| v0.1.0 EODHD MCP | FastMCP stdio transport; server metadata name `eodhd`, version `0.1.0` via `mcp._mcp_server.version`. | Official MCP SDK stdio pattern; FastMCP lacks public version param on constructor. |
+| v0.1.0 EODHD MCP | `get_earnings_history` sourced from fundamentals API `Earnings` block, not `/calendar/earnings`. | Single API call for v0.1; calendar endpoint adds scope without v0.1 requirement. |
+| v0.1.0 EODHD MCP | EODHD search returns 403 on demo key; mapped to structured `not_found` error. | EODHD documents search as unavailable on demo; agents get explicit fallback guidance. |
+| v0.1.0 EODHD MCP | Template pattern: `client.py` (HTTP + typed exceptions) + `server.py` (tools + shaping + error dicts) + README + `.env.example`, stdio only. | First MCP server; subsequent servers (Bloomberg, EDGAR, etc.) should replicate unless logged deviation. |
+| v0.1.0 EODHD MCP | No existing EODHD fetcher in repo; implemented direct REST wrapper. | SPEC §5.5 references external fetcher but none present in repo at build time. |
 
 ## Changelog
 
@@ -64,3 +70,4 @@ Architectural decisions made beyond what SPEC.md specifies, with rationale.
 | 2026-05-27 | Bootstrap agent | Initial scaffold: stubs, AGENTS.md, README.md, pyproject.toml, .gitignore. |
 | 2026-05-27 | Mandate agent | Authored lab.md v0.1.0 — full research mandate replacing stub. |
 | 2026-05-27 | Director prompt agent | Authored prompts/director.md v0.1.0 — full Director system prompt replacing stub. |
+| 2026-05-27 | EODHD MCP agent | Implemented mcp_servers/eodhd/ — first MCP server (stdio, four tools). |
