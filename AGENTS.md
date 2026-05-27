@@ -18,19 +18,19 @@ This document orients every agent that works on this repository. Read it after `
 
 ## Current Build Phase
 
-**Pre-v0.1 — scaffolding.**
+**v0.1 in progress — `lab.md` v0.1 complete.**
 
-Repository skeleton per SPEC.md §13 is in place. No runtime, MCP servers, skills, or boot logic yet. Next work begins v0.1 per SPEC.md §15.
+Research mandate authored. Remaining v0.1 scope per SPEC.md §15: `coverage.md` v1, EODHD MCP wrap, peer_regression skill, Director + US analyst prompts, single-stock memo end-to-end via Slack bridge.
 
 ## Next Highest-Leverage Artifacts
 
-From SPEC.md §17:
+From SPEC.md §17 (updated):
 
-1. **`lab.md` v0.1** — the mandate. Most of the lab's "intelligence" lives here, not in code.
-2. **Director system prompt** — the second-highest-leverage artifact. Interprets feedback, routes work, runs dependency-aware partial re-runs, surfaces pattern-based mandate edits.
+1. ~~**`lab.md` v0.1**~~ — **done** (v0.1.0, 2026-05-27).
+2. **Director system prompt** — interprets feedback, routes work, runs dependency-aware partial re-runs, surfaces pattern-based mandate edits.
 3. **EODHD wrapped as the first MCP** — fastest way to validate the capability pattern end-to-end on infrastructure already owned.
 
-Everything else is downstream of these three.
+Also required for v0.1: **`coverage.md` v1** (per SPEC.md §15, not listed in §17 but blocks end-to-end runs).
 
 ## Decisions Log
 
@@ -39,9 +39,13 @@ Architectural decisions made beyond what SPEC.md specifies, with rationale.
 | Version | Decision | Rationale |
 |---------|----------|-----------|
 | v0.0.1 | Repository scaffolded per SPEC.md §13. | Phase 1 onboarding: directory skeleton and stub files only; no implementation. |
+| v0.1.0 | Capability tiers expressed as domain classes (premium institutional → standard market data → filing repositories → news), not vendor names. | Task constraint: no vendor names in lab.md; aligns with SPEC §5.4 (degradation by mandate). |
+| v0.1.0 | FactorRegime reuse: task-scoped; reference prior regimes only for drift detection; re-run Phase 1 when drift suspected or full depth required. | SPEC §16-B open; task instruction specified reuse policy; encoded pending human review. |
+| v0.1.0 | Rigor levels (initiation / refresh / event-triggered) codified in Research Standards. | SPEC §12 describes trigger modes at lab level but not per-task depth; needed for consistent agent behavior. |
 
 ## Changelog
 
 | Date | Agent / note | Change |
 |------|----------------|--------|
 | 2026-05-27 | Bootstrap agent | Initial scaffold: stubs, AGENTS.md, README.md, pyproject.toml, .gitignore. |
+| 2026-05-27 | Mandate agent | Authored lab.md v0.1.0 — full research mandate replacing stub. |
