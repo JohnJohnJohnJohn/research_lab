@@ -18,17 +18,16 @@ This document orients every agent that works on this repository. Read it after `
 
 ## Current Build Phase
 
-**v0.1 in progress — specialist prompts complete.**
+**All prompt artifacts complete — `lab.py` v0.1 is next.**
 
-Remaining v0.1 scope per SPEC.md §15: `coverage.md` v1, peer_regression skill, `lab.py` boot + Slack bridge.
+Remaining v0.1 scope per SPEC.md §15: `coverage.md` v1, `peer_regression` skill, `lab.py` boot + Slack bridge.
 
 ## Next Highest-Leverage Artifacts
 
-1. ~~Regional analyst prompts (US, HK, China A/H)~~ — **done** (v0.1.0).
-2. ~~Specialist prompts (macro, sector, valuation, risk)~~ — **done** (v0.1.0, 2026-05-27).
+1. ~~All agent prompts (Director, regional, specialists, Coverage Agent)~~ — **done** (v0.1.0).
+2. **`lab.py` v0.1 boot** — wire prompts, MCPs, env vars, model selection, Slack bridge.
 3. **`coverage.md` v1** — active context for end-to-end runs.
 4. **`peer_regression` skill** — Phase 1 peer regression execution.
-5. **`lab.py` v0.1 boot** — wire MCP, agents, Slack bridge.
 
 ## Open Items
 
@@ -71,6 +70,18 @@ Architectural decisions made beyond what SPEC.md specifies, with rationale.
 | v0.1.1 Specialists | Valuation Engine emits conviction (BUY/HOLD/SELL) with default mapping; extends Director §3c handoff. | Full task assigns conviction to ValuationOutput; Director §3c lists price target only — Director synthesizes memo header. |
 | v0.1.1 Specialists | Valuation methodology selection (DCF/P-E, P/B/NAV, DDM/yield) driven by FactorRegime factors — proposed lab.md doctrine. | SPEC §5.5 names dcf_engine skill only; factor-driven method table from task, not yet in lab.md. |
 | v0.1.1 Specialists | Sector Expert uses fundamentals only; no price history per full task §3b. | Aligns with narrow specialist scope; peer regression remains Regional Analyst + Phase 1. |
+| v0.1.0 Coverage | Prompt at `prompts/coverage/agent.md` (not `template.md`). | Task specifies agent.md; template.md remains scaffold stub until removed or redirected in lab.py. |
+| v0.1.0 Coverage | v0.1 operational state files: `standing_thesis.md`, `kpis.md`, `regime_history.md`, `memo_history/`, `locked_sections.md`. | SPEC §13 lists `{thesis.md, kpis.json, regimes/, memos/}` — same purposes, different names; lab.py should map or SPEC should be updated. |
+| v0.1.0 Coverage | Drift detection runs on `post_phase1` invocation (after FactorRegime logged), not at pre-dispatch. | Director dispatch is Coverage Agent → Regional Phase 1; current FactorRegime unavailable at first injection. |
+| v0.1.0 Coverage | Coverage Agent creates `coverage_state/[TICKER]/` on first touch after memo publish. | SPEC §11 silent on who creates directory; Coverage Agent is owner per §11. |
+| v0.1.0 Coverage | `locked_sections.md` not in SPEC §13 — proposed addition for 📌 persistence across runs. | Director prompt handles locks within run; cross-run lock persistence needs storage. |
+
+### Proposed SPEC.md §13 edits (not applied — human confirmation required)
+
+| Item | Proposed change | Rationale |
+|------|-----------------|-----------|
+| coverage_state layout | Align §13 filenames with v0.1 operational layout or document mapping in lab.py | See Decisions Log v0.1.0 Coverage |
+| locked_sections.md | Add to §13 schema | Cross-run 📌 persistence |
 
 ### Proposed lab.md edits (not applied — human confirmation required)
 
@@ -91,3 +102,4 @@ Architectural decisions made beyond what SPEC.md specifies, with rationale.
 | 2026-05-27 | Regional prompts agent | Authored US/HK/China A/H regional analyst prompts v0.1.0; root .env.example. |
 | 2026-05-27 | Specialist prompts agent | Authored macro, sector, valuation, risk specialist prompts v0.1.0. |
 | 2026-05-27 | Specialist prompts agent | Revised specialist prompts to v0.1.1 per full task spec (verbatim output contracts). |
+| 2026-05-27 | Coverage Agent agent | Authored prompts/coverage/agent.md v0.1.0 — stateful name-scoped coverage memory. |
