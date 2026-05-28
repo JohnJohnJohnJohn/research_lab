@@ -16,6 +16,7 @@ dependencies = [
     "numpy",
     "statsmodels",
     "python-dotenv",
+    "slack-bolt>=1.18",
 ]
 
 [project.optional-dependencies]

@@ -18,9 +18,9 @@ This document orients every agent that works on this repository. Read it after `
 
 ## Current Build Phase
 
-**classify accuracy + peer_regression fixed — Slack bridge is last remaining v0.1 item.**
+**v0.1 COMPLETE — Slack bridge done.**
 
-Remaining v0.1 scope per SPEC.md §15: Slack bridge completion.
+Next: **v0.2 scope** (Bloomberg MCP, HK + China analysts full activation, FactorRegime live).
 
 ## Next Highest-Leverage Artifacts
 
@@ -28,7 +28,7 @@ Remaining v0.1 scope per SPEC.md §15: Slack bridge completion.
 2. ~~**`lab.py` v0.1 boot**~~ — **done** (v0.1.0): env, prompts, agents, EODHD MCP, local CLI.
 3. ~~**`coverage.md` v1**~~ — **done** (v0.1.1): thin dispatch index + seeded `coverage_state/` for 9988.HK, 700.HK, CRM.US; selective Director injection in `lab.py`.
 4. ~~**`peer_regression` skill**~~ — **done** (v0.1.2): OLS cross-sectional regression, fetcher injection, EODHD fallback.
-5. **Slack bridge** — complete `run_slack_mode()` / `handle_slack_message()` seam.
+5. ~~**Slack bridge**~~ — **done** (v0.1.5): Socket Mode, threaded memo posting, reactions, slash commands. See `SLACK_SETUP.md`.
 
 ## Open Items
 
@@ -85,6 +85,10 @@ Architectural decisions made beyond what SPEC.md specifies, with rationale.
 | v0.1.3 lab.py | `peer_regression` wrapped as `@function_tool` on regional analysts (us, hk, china_ah). | RC-4 fix. **Updated v0.1.4:** tool IS exposed on `agent.tools` (`peer_regression_tool`), but OpenRouter models do not invoke it reliably; Step 3.5 programmatic pre-compute runs as fallback and passes result to Step 4. |
 | v0.1.4 lab.py | **`is_covered` resolved in Python** via `is_ticker_covered()` / `get_covered_tickers()` parsing `coverage.md` Active table; injected into classify prompt; LLM value overridden post-parse. **`agents_needed` enforced** via `_apply_classify_agents_override()`. | Fixes Coverage Agent skip on 9988.HK smoke test. LLM string-matching against tables is unreliable. |
 | v0.1.4 lab.py | **Step 3.5 peer regression pre-compute** with `DEFAULT_PEERS` lookup; logs `peer_regression` step (confidence, n_peers, data_gaps). `analyst_tools` debug logging before Step 4. Regional prompts §3b name `peer_regression_tool` explicitly. | Root cause B confirmed (tool visible); model non-compliance → programmatic fallback always runs when rigor=deep/initiation. Fundamentals 403 → n_peers=0, confidence=low (expected on current EODHD tier). |
+| v0.1.5 Slack | **Slack bridge via slack-bolt Socket Mode.** `handle_slack_message()` posts ack → runs `run_pipeline()` → parent memo + threaded sections. Handlers: `app_mention`, `message`, `reaction_added`, slash commands (`/rerun`, `/rerun-all`, `/lock`, `/macro`). | SPEC §7–§9. Setup guide: `SLACK_SETUP.md`. |
+| v0.1.5 Slack | Section ts tracking is **in-memory only**; not persisted across restarts. | Known v0.1 limitation — reaction/thread routing lost on bot restart. |
+| v0.1.5 Slack | `/rerun` and `/rerun-all` run **full pipeline**; partial step re-runs deferred to v0.2. | Task spec v0.1 scope; `/macro` passes macro-focused feedback into full pipeline. |
+| v0.1.5 Slack | Reactions on non-memo messages silently ignored. 📌 lock skipped if `detect_ticker()` fails (logged, no crash). Bot must be invited to `SLACK_CHANNEL_ID`. Slash commands must be registered in Slack App manifest. | Operational constraints documented in `SLACK_SETUP.md`. |
 | v0.1.0 lab.py | `pyproject.toml` uses `openai-agents[litellm]` for multi-provider models. | Required for `.env.example` provider prefixes without scattering provider logic. |
 | v0.1.1 coverage | `coverage.md` is a thin dispatch index only (<40 lines); per-name depth lives in `coverage_state/[TICKER]/`. | Injected wholesale into Director context every run; flat per-name detail would swamp context window at scale. |
 | v0.1.1 lab.py | `detect_ticker()` + `load_coverage_state()` + `build_coverage_context()` inject task-scoped state before `Runner.run()`. | Director gets thin `coverage.md` always; relevant `coverage_state/` files only when ticker detected in task. `memo_history/` excluded — Coverage Agent handles memo injection. |
@@ -122,5 +126,6 @@ Architectural decisions made beyond what SPEC.md specifies, with rationale.
 | 2026-05-27 | Coverage Agent agent | Authored prompts/coverage/agent.md v0.1.0 — stateful name-scoped coverage memory. |
 | 2026-05-27 | lab.py boot agent | Implemented lab.py v0.1 — config, prompts, nine agents, EODHD MCP, local CLI. |
 | 2026-05-28 | coverage refactor agent | coverage.md v1 thin index; seeded coverage_state/ for 9988.HK, 700.HK, CRM.US; lab.py selective state injection. |
+| 2026-05-28 | Slack bridge agent | slack-bolt Socket Mode; threaded memo posting; reactions + slash commands; SLACK_SETUP.md. v0.1 complete. |
 | 2026-05-28 | classify + peer_regression fix | is_ticker_covered Python override; Step 3.5 pre-compute; analyst_tools logging; regional prompt §3b hardening. |
 | 2026-05-28 | Path A orchestration agent | Programmatic pipeline in lab.py; director.md + coverage/agent.md runtime notes; smoke test 9988.HK passed (7 steps, status completed). |
