@@ -18,16 +18,16 @@ This document orients every agent that works on this repository. Read it after `
 
 ## Current Build Phase
 
-**`coverage.md` v1 + selective `coverage_state/` loading complete — next: first end-to-end smoke test.**
+**peer_regression skill complete — first end-to-end smoke test is next.**
 
-Remaining v0.1 scope per SPEC.md §15: `peer_regression` skill, Slack bridge completion.
+Remaining v0.1 scope per SPEC.md §15: Slack bridge completion.
 
 ## Next Highest-Leverage Artifacts
 
 1. ~~All agent prompts (Director, regional, specialists, Coverage Agent)~~ — **done** (v0.1.0).
 2. ~~**`lab.py` v0.1 boot**~~ — **done** (v0.1.0): env, prompts, agents, EODHD MCP, local CLI.
 3. ~~**`coverage.md` v1**~~ — **done** (v0.1.1): thin dispatch index + seeded `coverage_state/` for 9988.HK, 700.HK, CRM.US; selective Director injection in `lab.py`.
-4. **`peer_regression` skill** — Phase 1 peer regression execution.
+4. ~~**`peer_regression` skill**~~ — **done** (v0.1.2): OLS cross-sectional regression, fetcher injection, EODHD fallback.
 5. **Slack bridge** — complete `run_slack_mode()` / `handle_slack_message()` seam.
 
 ## Open Items
@@ -84,6 +84,9 @@ Architectural decisions made beyond what SPEC.md specifies, with rationale.
 | v0.1.0 lab.py | `pyproject.toml` uses `openai-agents[litellm]` for multi-provider models. | Required for `.env.example` provider prefixes without scattering provider logic. |
 | v0.1.1 coverage | `coverage.md` is a thin dispatch index only (<40 lines); per-name depth lives in `coverage_state/[TICKER]/`. | Injected wholesale into Director context every run; flat per-name detail would swamp context window at scale. |
 | v0.1.1 lab.py | `detect_ticker()` + `load_coverage_state()` + `build_coverage_context()` inject task-scoped state before `Runner.run()`. | Director gets thin `coverage.md` always; relevant `coverage_state/` files only when ticker detected in task. `memo_history/` excluded — Coverage Agent handles memo injection. |
+| v0.1.2 peer_regression | Skill accepts injected `fetch_prices` / `fetch_fundamentals` callables; sync httpx EODHD REST fallback when omitted. | Skill does not manage MCP subprocess; keeps unit-testable and matches SPEC §5.2 in-process skill model. |
+| v0.1.2 peer_regression | `PeerRegressionResult` uses `{factor, direction, t_stat, note}`; analyst maps to FactorRegime `{factor, weight, rationale}`. | Task-spec output differs from lab.md §4 weight/rationale fields; mapping left to Regional Analyst synthesis layer. |
+| v0.1.2 lab.py | `SKILLS` dict alongside `CAPABILITIES`; `peer_regression` assigned to regional analysts. | Minimal boot wiring per SPEC §5.3; no custom registry beyond import confirmation. |
 
 ### Proposed SPEC.md edits (applied 2026-05-28)
 
@@ -115,3 +118,4 @@ Architectural decisions made beyond what SPEC.md specifies, with rationale.
 | 2026-05-27 | Coverage Agent agent | Authored prompts/coverage/agent.md v0.1.0 — stateful name-scoped coverage memory. |
 | 2026-05-27 | lab.py boot agent | Implemented lab.py v0.1 — config, prompts, nine agents, EODHD MCP, local CLI. |
 | 2026-05-28 | coverage refactor agent | coverage.md v1 thin index; seeded coverage_state/ for 9988.HK, 700.HK, CRM.US; lab.py selective state injection. |
+| 2026-05-28 | peer_regression agent | Implemented skills/peer_regression.py; SKILLS wiring in lab.py. |

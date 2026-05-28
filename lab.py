@@ -26,6 +26,8 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from skills.peer_regression import run_peer_regression
+
 ROOT = Path(__file__).resolve().parent
 
 # ---------------------------------------------------------------------------
@@ -98,6 +100,18 @@ CAPABILITIES: dict[str, dict[str, Any]] = {
             "china_ah_analyst",
             "valuation_specialist",
             "sector_specialist",
+        ],
+    },
+}
+
+SKILLS: dict[str, dict[str, Any]] = {
+    "peer_regression": {
+        "module": "skills.peer_regression",
+        "entrypoint": run_peer_regression,
+        "assigned_roles": [
+            "us_analyst",
+            "hk_analyst",
+            "china_ah_analyst",
         ],
     },
 }
