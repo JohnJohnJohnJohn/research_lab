@@ -4,12 +4,12 @@
 Loads doctrine and prompts, resolves per-role models, instantiates agents,
 registers MCP capabilities, and routes tasks to the Director entrypoint.
 
-Local CLI (no Slack required):
+Local CLI (no Discord required):
     python lab.py "Initiate coverage on 9988 HK"
 
-Slack bridge:
-    python lab.py --slack
-    python lab.py --test-slack
+Discord bridge:
+    python lab.py --discord
+    python lab.py --test-discord
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ import json
 import os
 import re
 import sys
-import traceback
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from pathlib import Path
@@ -141,7 +140,11 @@ MEMO_SECTION_TITLES: list[tuple[str, str]] = [
     ("8", "Risks"),
 ]
 
-SLACK_SECTION_LIMIT = 3900
+DISCORD_MESSAGE_LIMIT = 1900
+
+# In-memory Discord bridge state (resets on bot restart).
+_last_task: str | None = None
+_last_ticker: str | None = None
 
 SKILLS: dict[str, dict[str, Any]] = {
     "peer_regression": {
@@ -154,19 +157,6 @@ SKILLS: dict[str, dict[str, Any]] = {
         ],
     },
         }
-
-
-@dataclass
-class SlackBridgeState:
-    """In-memory Slack session state (not persisted across restarts)."""
-
-    section_num_by_ts: dict[str, str] = field(default_factory=dict)
-    section_content_by_ts: dict[str, str] = field(default_factory=dict)
-    memo_parent_by_section_ts: dict[str, str] = field(default_factory=dict)
-    memo_meta_by_ts: dict[str, dict[str, Any]] = field(default_factory=dict)
-    last_task: str | None = None
-    last_ticker: str | None = None
-    compliance_holds: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -203,9 +193,9 @@ class LabConfig:
     dashscope_api_base: str | None = None
     openrouter_api_key: str | None = None
     eodhd_api_key: str | None = None
-    slack_bot_token: str | None = None
-    slack_app_token: str | None = None
-    slack_channel_id: str | None = None
+    discord_bot_token: str | None = None
+    discord_guild_id: str | None = None
+    discord_channel_id: str | None = None
     resolved_models: dict[str, str] = field(default_factory=dict)
 
 
@@ -269,9 +259,9 @@ def load_config() -> LabConfig:
         dashscope_api_base=os.getenv("DASHSCOPE_API_BASE", "").strip() or None,
         openrouter_api_key=os.getenv("OPENROUTER_API_KEY", "").strip() or None,
         eodhd_api_key=os.getenv("EODHD_API_KEY", "").strip() or None,
-        slack_bot_token=os.getenv("SLACK_BOT_TOKEN", "").strip() or None,
-        slack_app_token=os.getenv("SLACK_APP_TOKEN", "").strip() or None,
-        slack_channel_id=os.getenv("SLACK_CHANNEL_ID", "").strip() or None,
+        discord_bot_token=os.getenv("DISCORD_BOT_TOKEN", "").strip() or None,
+        discord_guild_id=os.getenv("DISCORD_GUILD_ID", "").strip() or None,
+        discord_channel_id=os.getenv("DISCORD_CHANNEL_ID", "").strip() or None,
     )
 
     for role in PROMPT_PATHS:
@@ -1397,7 +1387,7 @@ def parse_memo_sections(memo_text: str) -> dict[str, str]:
 
 
 def extract_memo_header(memo_text: str) -> str:
-    """Extract conviction stamp block for parent Slack message."""
+    """Extract conviction stamp block for Discord parent message (~first 5 lines)."""
     text = _strip_memo_fences(memo_text)
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     if not lines:
@@ -1409,8 +1399,48 @@ def extract_memo_header(memo_text: str) -> str:
         if re.search(r"conviction\s*:", ln, re.IGNORECASE):
             break
     if header_lines:
-        return "\n".join(header_lines)
-    return "\n".join(lines[:3])
+        return "\n".join(header_lines[:5])
+    return "\n".join(lines[:5])
+
+
+def format_discord_message(text: str, max_len: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
+    """Split text into chunks ≤ max_len for Discord's 2000-char message limit."""
+    if len(text) <= max_len:
+        return [text]
+
+    chunks: list[str] = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= max_len:
+            chunks.append(remaining)
+            break
+        split_at = remaining.rfind("\n", 0, max_len)
+        if split_at <= 0:
+            split_at = max_len
+        chunks.append(remaining[:split_at].rstrip())
+        remaining = remaining[split_at:].lstrip("\n")
+    return chunks or [text[:max_len]]
+
+
+def _write_locked_section(ticker: str, section_ref: str) -> None:
+    """
+    Append locked section reference to coverage_state/[TICKER]/locked_sections.md.
+    Creates file if not exists. Never raises.
+    """
+    try:
+        path = COVERAGE_STATE / ticker / COVERAGE_STATE_FILES["locked_sections"]
+        if not path.parent.exists():
+            _log_step("lock_skip", reason="coverage_state dir missing", ticker=ticker)
+            return
+        stamp = date.today().isoformat()
+        entry = (
+            f"\n## Locked {stamp} — {section_ref}\n"
+            "_Locked via Discord /lock command._\n"
+        )
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(entry)
+    except OSError as exc:
+        _log_step("lock_error", error=str(exc), ticker=ticker)
 
 
 def _extract_memo_fields(memo_text: str, result: dict[str, Any]) -> dict[str, str]:
@@ -1448,79 +1478,32 @@ def _extract_memo_fields(memo_text: str, result: dict[str, Any]) -> dict[str, st
     }
 
 
-def _truncate_slack_text(text: str, limit: int = SLACK_SECTION_LIMIT) -> str:
-    if len(text) <= limit:
-        return text
-    return text[: limit - 20] + "\n\n...[truncated]..."
-
-
-def _strip_bot_mention(text: str) -> str:
-    return re.sub(r"<@[A-Z0-9]+>\s*", "", text).strip()
-
-
-def write_locked_section(ticker: str, section_num: str, content: str) -> None:
-    """Append locked section content to coverage_state/[TICKER]/locked_sections.md."""
-    state_dir = COVERAGE_STATE / ticker
-    state_dir.mkdir(parents=True, exist_ok=True)
-    path = state_dir / COVERAGE_STATE_FILES["locked_sections"]
-    stamp = date.today().isoformat()
-    entry = f"\n\n## Section {section_num} (locked {stamp})\n\n{content.strip()}\n"
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(entry)
-
-
-async def handle_slack_message(
+async def handle_discord_message(
     task: str,
-    thread_ts: str | None,
+    channel: Any,
+    thread: Any | None,
     feedback_context: str | None,
-    channel_id: str,
-    client: Any,
     config: LabConfig,
     prompts: dict[str, str],
-    state: SlackBridgeState,
 ) -> None:
-    """Route a Slack message to run_pipeline() and post the memo back to Slack."""
-    display_task = task if len(task) <= 60 else task[:57] + "..."
-    ack = await client.chat_postMessage(
-        channel=channel_id,
-        text=(
-            f"🔬 Research Lab: running pipeline for '{display_task}'\n"
-            "This takes 60-120 seconds."
-        ),
-        thread_ts=thread_ts,
+    """Route a Discord message to run_pipeline() and post the memo as a thread."""
+    global _last_task, _last_ticker
+
+    display_task = task if len(task) <= 80 else task[:77] + "..."
+    target = thread or channel
+    ack = await target.send(
+        f"🔬 Running pipeline for: `{display_task}`\nExpected: 60–120 seconds."
     )
-    ack_ts = ack["ts"]
 
     pipeline_task = task
     if feedback_context:
-        pipeline_task = f"[Feedback context]\n{feedback_context}\n\n{task}"
-
-    ticker_probe = detect_ticker(pipeline_task)
-    if ticker_probe and ticker_probe in state.compliance_holds:
-        await client.chat_update(
-            channel=channel_id,
-            ts=ack_ts,
-            text=(
-                f"⚠️ Research on {ticker_probe} is paused pending compliance review. "
-                "Reply with an explicit resume instruction to continue."
-            ),
-        )
-        return
+        pipeline_task = f"[Feedback]\n{feedback_context}\n\n{task}"
 
     try:
         result = await run_pipeline(pipeline_task, config, prompts)
     except Exception as exc:
-        await client.chat_update(
-            channel=channel_id,
-            ts=ack_ts,
-            text=f"❌ Pipeline failed: {exc}\n```{traceback.format_exc()[-1500:]}```",
-        )
+        await ack.edit(content=f"❌ Pipeline failed: {exc}")
         return
-
-    state.last_task = pipeline_task
-    plan = result.get("dispatch_plan") or {}
-    if plan.get("ticker"):
-        state.last_ticker = str(plan["ticker"])
 
     if result.get("status") == "failed" or not result.get("final_memo"):
         steps = result.get("steps") or {}
@@ -1528,346 +1511,91 @@ async def handle_slack_message(
             key: (len(val) if isinstance(val, str) else type(val).__name__)
             for key, val in steps.items()
         }
-        await client.chat_update(
-            channel=channel_id,
-            ts=ack_ts,
-            text=(
-                f"❌ Pipeline {result.get('status', 'failed')} — no memo produced.\n"
-                f"```{json.dumps(step_summary, indent=2)}```"
-            ),
+        failed = result.get("status", "failed")
+        await ack.edit(
+            content=(
+                f"❌ Pipeline error at step `{failed}` — no memo produced.\n"
+                f"```json\n{json.dumps(step_summary, indent=2)[:1500]}\n```"
+            )
         )
         return
 
+    _last_task = pipeline_task
+    plan = result.get("dispatch_plan") or {}
+    if plan.get("ticker"):
+        _last_ticker = str(plan["ticker"])
+
     memo_text = _strip_memo_fences(str(result["final_memo"]))
     fields = _extract_memo_fields(memo_text, result)
-    parent_text = (
-        f"INVESTMENT MEMO — {fields['ticker']} {fields['region']}\n"
-        f"Stamped: {fields['stamp']}\n"
-        f"─────────────────────────────────\n"
-        f"Conviction: {fields['conviction']} | PT: {fields['price_target']} | "
-        f"Upside: {fields['upside']}\n"
-        f"Divergence: {fields['divergence']}"
+    parent_text = extract_memo_header(memo_text)
+    if not parent_text.startswith("INVESTMENT MEMO"):
+        parent_text = (
+            f"INVESTMENT MEMO — {fields['ticker']} {fields['region']}\n"
+            f"Stamped: {fields['stamp']}\n"
+            f"─────────────────────────────────\n"
+            f"Conviction: {fields['conviction']} | PT: {fields['price_target']} | "
+            f"Upside: {fields['upside']}\n"
+            f"Divergence: {fields['divergence']}"
+        )
+
+    parent_msg = await channel.send(parent_text[:1990])
+    thread_name = f"{fields['ticker']} — {date.today().isoformat()}"
+    memo_thread = await parent_msg.create_thread(
+        name=thread_name[:100],
+        auto_archive_duration=10080,
     )
-    parent = await client.chat_postMessage(
-        channel=channel_id,
-        text=_truncate_slack_text(parent_text, 3900),
-        thread_ts=thread_ts,
-    )
-    memo_ts = parent["ts"]
 
     sections = parse_memo_sections(memo_text)
-    section_ts_map: dict[str, str] = {}
+    title_by_num = dict(MEMO_SECTION_TITLES)
     if "full" in sections:
-        sec_resp = await client.chat_postMessage(
-            channel=channel_id,
-            text=_truncate_slack_text(sections["full"]),
-            thread_ts=memo_ts,
-        )
-        section_ts_map["full"] = sec_resp["ts"]
-        state.section_content_by_ts[sec_resp["ts"]] = sections["full"]
+        for chunk in format_discord_message(sections["full"]):
+            await memo_thread.send(chunk)
     else:
-        title_by_num = dict(MEMO_SECTION_TITLES)
         for num, body in sections.items():
             title = title_by_num.get(num, f"Section {num}")
-            sec_resp = await client.chat_postMessage(
-                channel=channel_id,
-                text=_truncate_slack_text(f"*{num}. {title}*\n\n{body.strip()}"),
-                thread_ts=memo_ts,
-            )
-            sec_ts = sec_resp["ts"]
-            section_ts_map[num] = sec_ts
-            state.section_num_by_ts[sec_ts] = num
-            state.section_content_by_ts[sec_ts] = body
-            state.memo_parent_by_section_ts[sec_ts] = memo_ts
+            section_text = f"**{num}. {title}**\n\n{body.strip()}"
+            for chunk in format_discord_message(section_text):
+                await memo_thread.send(chunk)
 
-    state.memo_meta_by_ts[memo_ts] = {
-        "ticker": fields["ticker"],
-        "task": pipeline_task,
-        "section_ts": section_ts_map,
-    }
-
-    await client.chat_update(channel=channel_id, ts=ack_ts, text="✅ Done.")
+    await memo_thread.send(
+        "---\n"
+        "Use `/rerun`, `/rerun-all`, `/lock <section>`, or `/macro <feedback>` to interact.\n"
+        "Reply in this thread to provide feedback for a re-run."
+    )
+    await ack.edit(content="✅ Pipeline complete.")
 
 
-def _validate_slack_env() -> tuple[str, str, str]:
+def _validate_discord_env() -> tuple[str, str, str]:
     load_dotenv(ROOT / ".env")
     load_dotenv()
-    bot = os.getenv("SLACK_BOT_TOKEN", "").strip()
-    app_token = os.getenv("SLACK_APP_TOKEN", "").strip()
-    channel = os.getenv("SLACK_CHANNEL_ID", "").strip()
+    token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
+    guild_id = os.getenv("DISCORD_GUILD_ID", "").strip()
+    channel_id = os.getenv("DISCORD_CHANNEL_ID", "").strip()
     missing = [
         name
         for name, val in (
-            ("SLACK_BOT_TOKEN", bot),
-            ("SLACK_APP_TOKEN", app_token),
-            ("SLACK_CHANNEL_ID", channel),
+            ("DISCORD_BOT_TOKEN", token),
+            ("DISCORD_GUILD_ID", guild_id),
+            ("DISCORD_CHANNEL_ID", channel_id),
         )
         if not val
     ]
     if missing:
         raise LabConfigError(
-            "Slack mode requires: " + ", ".join(missing) + ". Local CLI works without Slack."
+            "Discord mode requires: "
+            + ", ".join(missing)
+            + ". Local CLI works without Discord."
         )
-    return bot, app_token, channel
+    return token, guild_id, channel_id
 
 
-def _register_slack_handlers(
-    app: Any,
-    config: LabConfig,
-    prompts: dict[str, str],
-    channel_id: str,
-    state: SlackBridgeState,
-) -> None:
-    """Register Slack Socket Mode event handlers on AsyncApp."""
+def run_discord_mode() -> int:
+    """Discord Gateway bridge per SPEC §7."""
+    import discord
+    from discord import app_commands
 
-    async def _dispatch(coro: Any) -> None:
-        try:
-            await coro
-        except Exception as exc:
-            print(json.dumps({"step": "slack_handler_error", "error": str(exc)}), flush=True)
-
-    async def _run_task(
-        task: str,
-        client: Any,
-        thread_ts: str | None = None,
-        feedback_context: str | None = None,
-    ) -> None:
-        await handle_slack_message(
-            task=task,
-            thread_ts=thread_ts,
-            feedback_context=feedback_context,
-            channel_id=channel_id,
-            client=client,
-            config=config,
-            prompts=prompts,
-            state=state,
-        )
-
-    @app.event("app_mention")
-    async def on_app_mention(event: dict[str, Any], client: Any) -> None:
-        if event.get("bot_id"):
-            return
-        text = _strip_bot_mention(event.get("text", ""))
-        if not text:
-            return
-        asyncio.create_task(_dispatch(_run_task(text, client)))
-
-    @app.event("message")
-    async def on_message(event: dict[str, Any], client: Any) -> None:
-        if event.get("bot_id") or event.get("subtype"):
-            return
-        if event.get("channel") != channel_id:
-            return
-
-        thread_ts = event.get("thread_ts")
-        msg_ts = event.get("ts")
-        text = event.get("text", "").strip()
-        if not text:
-            return
-
-        # Thread reply → feedback routing (Handler 2)
-        if thread_ts and thread_ts != msg_ts:
-            section_num = state.section_num_by_ts.get(thread_ts)
-            if not section_num:
-                for meta in state.memo_meta_by_ts.values():
-                    for num, sec_ts in (meta.get("section_ts") or {}).items():
-                        if thread_ts == sec_ts:
-                            section_num = num
-                            break
-                    if section_num:
-                        break
-            section_ctx = f"Section {section_num}" if section_num else "memo thread"
-            feedback = f"[{section_ctx}] {text}"
-            asyncio.create_task(
-                _dispatch(
-                    _run_task(
-                        f"Re-run with feedback: {text}",
-                        client,
-                        thread_ts=thread_ts,
-                        feedback_context=feedback,
-                    )
-                )
-            )
-            return
-
-        # Top-level channel message (Handler 1) — ignore @mentions (app_mention handles)
-        if "<@" in text:
-            return
-        asyncio.create_task(_dispatch(_run_task(text, client)))
-
-    @app.event("reaction_added")
-    async def on_reaction(event: dict[str, Any], client: Any) -> None:
-        reaction = event.get("reaction", "")
-        item = event.get("item") or {}
-        if item.get("type") != "message":
-            return
-        msg_ts = item.get("ts")
-        if not msg_ts:
-            return
-
-        section_num = state.section_num_by_ts.get(msg_ts)
-        parent_ts = state.memo_parent_by_section_ts.get(msg_ts)
-        memo_meta = state.memo_meta_by_ts.get(msg_ts) or state.memo_meta_by_ts.get(
-            parent_ts or "", {}
-        )
-        if not section_num and not memo_meta:
-            return
-
-        ticker = memo_meta.get("ticker") or state.last_ticker or "UNKNOWN"
-        content = state.section_content_by_ts.get(msg_ts, "")
-
-        if reaction in ("thumbsup", "+1"):
-            return
-        if reaction in ("thumbsdown", "-1"):
-            await client.chat_postMessage(
-                channel=channel_id,
-                text="Please reply in this thread with feedback to re-run this section.",
-                thread_ts=msg_ts,
-            )
-            return
-        if reaction == "arrows_counterclockwise":
-            sec_label = section_num or "full memo"
-            asyncio.create_task(
-                _dispatch(
-                    _run_task(
-                        f"Re-run section {sec_label} from scratch for {ticker}",
-                        client,
-                        thread_ts=msg_ts,
-                        feedback_context=f"Re-run section {sec_label} from scratch.",
-                    )
-                )
-            )
-            return
-        if reaction == "pushpin":
-            if not detect_ticker(str(ticker)) and not detect_ticker(content):
-                print(
-                    json.dumps(
-                        {
-                            "step": "lock_skip",
-                            "reason": "detect_ticker failed",
-                            "ticker": ticker,
-                        }
-                    ),
-                    flush=True,
-                )
-                return
-            lock_ticker = detect_ticker(str(ticker)) or detect_ticker(content) or str(ticker)
-            if section_num and content:
-                try:
-                    write_locked_section(lock_ticker, section_num, content)
-                    await client.chat_postMessage(
-                        channel=channel_id,
-                        text=f"Section {section_num} locked for {lock_ticker}.",
-                        thread_ts=msg_ts,
-                    )
-                except OSError as exc:
-                    print(json.dumps({"step": "lock_error", "error": str(exc)}), flush=True)
-            return
-        if reaction == "warning":
-            state.compliance_holds.add(str(ticker))
-            await client.chat_postMessage(
-                channel=channel_id,
-                text=(
-                    f"Compliance flag noted. Research on {ticker} paused pending review."
-                ),
-                thread_ts=msg_ts,
-            )
-
-    @app.command("/rerun")
-    async def cmd_rerun(ack: Any, body: dict[str, Any], client: Any) -> None:
-        await ack()
-        section = (body.get("text") or "").strip()
-        task = state.last_task or "Re-run last research task"
-        if section:
-            task = f"Re-run section {section}: {task}"
-        asyncio.create_task(
-            _dispatch(
-                _run_task(
-                    task,
-                    client,
-                    thread_ts=body.get("channel_id"),
-                    feedback_context=section or None,
-                )
-            )
-        )
-
-    @app.command("/rerun-all")
-    async def cmd_rerun_all(ack: Any, body: dict[str, Any], client: Any) -> None:
-        await ack()
-        ticker = state.last_ticker or "last ticker"
-        task = state.last_task or f"Re-run full pipeline for {ticker}"
-        asyncio.create_task(_dispatch(_run_task(task, client)))
-
-    @app.command("/lock")
-    async def cmd_lock(ack: Any, body: dict[str, Any], client: Any) -> None:
-        await ack()
-        section = (body.get("text") or "1").strip()
-        ticker = state.last_ticker
-        if not ticker:
-            await client.chat_postMessage(
-                channel=channel_id,
-                text="No ticker available to lock. Run a memo first.",
-            )
-            return
-        content = ""
-        for ts, num in state.section_num_by_ts.items():
-            if num == section:
-                content = state.section_content_by_ts.get(ts, "")
-                break
-        if not content:
-            await client.chat_postMessage(
-                channel=channel_id,
-                text=f"Section {section} content not found in memory.",
-            )
-            return
-        try:
-            write_locked_section(ticker, section, content)
-            await client.chat_postMessage(
-                channel=channel_id,
-                text=f"Section {section} locked for {ticker}.",
-            )
-        except OSError as exc:
-            print(json.dumps({"step": "lock_error", "error": str(exc)}), flush=True)
-
-    @app.command("/macro")
-    async def cmd_macro(ack: Any, body: dict[str, Any], client: Any) -> None:
-        await ack()
-        feedback = (body.get("text") or "").strip()
-        ticker = state.last_ticker or "UNKNOWN"
-        task = f"Re-run macro analysis for {ticker}"
-        if feedback:
-            task += f" with feedback: {feedback}"
-        asyncio.create_task(
-            _dispatch(
-                _run_task(
-                    task,
-                    client,
-                    feedback_context=feedback or None,
-                )
-            )
-        )
-
-
-async def _run_slack_async(config: LabConfig, prompts: dict[str, str]) -> None:
-    from slack_bolt.async_app import AsyncApp
-    from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
-
-    bot_token, app_token, channel_id = _validate_slack_env()
-    state = SlackBridgeState()
-    app = AsyncApp(token=bot_token)
-    _register_slack_handlers(app, config, prompts, channel_id, state)
-    handler = AsyncSocketModeHandler(app, app_token)
-    print(
-        json.dumps({"status": "slack_bridge_running", "channel": channel_id}),
-        flush=True,
-    )
-    await handler.start_async()
-
-
-def run_slack_mode() -> int:
-    """Slack Socket Mode bridge per SPEC §7."""
     try:
-        bot_token, _app_token, _channel = _validate_slack_env()
+        token, guild_id_str, channel_id_str = _validate_discord_env()
     except LabConfigError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -1879,23 +1607,166 @@ def run_slack_mode() -> int:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 1
 
-    if not bot_token.startswith("xoxb-"):
-        print("Warning: SLACK_BOT_TOKEN should start with xoxb-", file=sys.stderr)
+    guild_id = int(guild_id_str)
+    channel_id = int(channel_id_str)
+    guild_obj = discord.Object(id=guild_id)
+
+    intents = discord.Intents.default()
+    intents.message_content = True
+    client = discord.Client(intents=intents)
+    tree = app_commands.CommandTree(client)
+
+    @client.event
+    async def on_ready() -> None:
+        await tree.sync(guild=guild_obj)
+        print(
+            json.dumps(
+                {
+                    "status": "discord_bridge_running",
+                    "bot": str(client.user),
+                    "guild_id": guild_id_str,
+                    "channel_id": channel_id_str,
+                }
+            ),
+            flush=True,
+        )
+
+    @client.event
+    async def on_message(message: discord.Message) -> None:
+        if message.author.bot:
+            return
+        if not isinstance(message.channel, discord.Thread):
+            return
+        if message.channel.parent_id != channel_id:
+            return
+        parent_channel = message.channel.parent
+        if parent_channel is None:
+            return
+        await handle_discord_message(
+            task=f"Re-run with feedback: {message.content}",
+            channel=parent_channel,
+            thread=message.channel,
+            feedback_context=message.content,
+            config=config,
+            prompts=prompts,
+        )
+
+    @tree.command(
+        name="research",
+        description="Run the research pipeline on a ticker or task",
+        guild=guild_obj,
+    )
+    async def research_cmd(interaction: discord.Interaction, task: str) -> None:
+        await interaction.response.defer()
+        ch = client.get_channel(channel_id)
+        if ch is None:
+            await interaction.followup.send("Configured channel not found.")
+            return
+        await handle_discord_message(task, ch, None, None, config, prompts)
+        await interaction.followup.send("Pipeline started — see channel for progress.")
+
+    @tree.command(
+        name="rerun",
+        description="Re-run the last pipeline (full memo; section arg ignored in v0.1)",
+        guild=guild_obj,
+    )
+    async def rerun_cmd(interaction: discord.Interaction, section: str = "all") -> None:
+        await interaction.response.defer()
+        if not _last_task:
+            await interaction.followup.send(
+                "No previous task found. Use `/research <task>` first."
+            )
+            return
+        ch = client.get_channel(channel_id)
+        if ch is None:
+            await interaction.followup.send("Configured channel not found.")
+            return
+        await handle_discord_message(
+            _last_task,
+            ch,
+            None,
+            f"Re-run requested for section: {section}",
+            config,
+            prompts,
+        )
+        await interaction.followup.send("Re-run started.")
+
+    @tree.command(
+        name="rerun-all",
+        description="Re-run the full pipeline for the last task",
+        guild=guild_obj,
+    )
+    async def rerun_all_cmd(interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        if not _last_task:
+            await interaction.followup.send(
+                "No previous task found. Use `/research <task>` first."
+            )
+            return
+        ch = client.get_channel(channel_id)
+        if ch is None:
+            await interaction.followup.send("Configured channel not found.")
+            return
+        await handle_discord_message(_last_task, ch, None, None, config, prompts)
+        await interaction.followup.send("Full re-run started.")
+
+    @tree.command(
+        name="lock",
+        description="Lock a memo section to preserve it on re-run",
+        guild=guild_obj,
+    )
+    async def lock_cmd(interaction: discord.Interaction, section: str) -> None:
+        ticker = detect_ticker(_last_task or "")
+        if not ticker:
+            await interaction.response.send_message(
+                "Could not detect ticker from last task. Run `/research` first."
+            )
+            return
+        _write_locked_section(ticker, section)
+        await interaction.response.send_message(
+            f"✅ Section `{section}` locked for `{ticker}`. "
+            "It will be preserved on re-run."
+        )
+
+    @tree.command(
+        name="macro",
+        description="Re-run macro analysis with feedback",
+        guild=guild_obj,
+    )
+    async def macro_cmd(interaction: discord.Interaction, feedback: str) -> None:
+        await interaction.response.defer()
+        ticker = detect_ticker(_last_task or "")
+        task = f"Re-run macro step with feedback: {feedback}"
+        if ticker:
+            task += f" for {ticker}"
+        ch = client.get_channel(channel_id)
+        if ch is None:
+            await interaction.followup.send("Configured channel not found.")
+            return
+        await handle_discord_message(task, ch, None, feedback, config, prompts)
+        await interaction.followup.send("Macro re-run started.")
 
     try:
-        asyncio.run(_run_slack_async(config, prompts))
+        client.run(token)
         return 0
     except KeyboardInterrupt:
         return 0
     except Exception as exc:
-        print(f"Slack bridge error: {exc}", file=sys.stderr)
+        print(f"Discord bridge error: {exc}", file=sys.stderr)
         return 1
 
 
-def test_slack_wiring() -> int:
-    """Smoke test Slack wiring without live tokens."""
-    from slack_bolt.async_app import AsyncApp
+def run_slack_mode() -> int:
+    """Deprecated — Slack replaced by Discord."""
+    print(
+        "Slack bridge replaced by Discord in v0.1.\nUse: python lab.py --discord",
+        file=sys.stderr,
+    )
+    return 1
 
+
+def test_discord_helpers() -> int:
+    """Smoke test Discord helpers without live tokens."""
     sample_memo = (
         "INVESTMENT MEMO — 9988.HK HK\n"
         "Stamped: lab.md v0.1.0 | coverage.md abc123 | 2026-05-28\n"
@@ -1904,37 +1775,35 @@ def test_slack_wiring() -> int:
         "1. Investment Thesis\nBullet one.\n"
         "2. Factor Regime\nRegime text.\n"
         "3. Fundamental Snapshot\nSnapshot text.\n"
+        "4. Regional Context\nContext.\n"
+        "5. Sell-Side Consensus\nConsensus.\n"
+        "6. Scenario Analysis\nScenarios.\n"
+        "7. Catalysts & Timeline\nCatalysts.\n"
+        "8. Risks\nRisk one.\n"
     )
     sections = parse_memo_sections(sample_memo)
     header = extract_memo_header(sample_memo)
+    long_text = "Line.\n" * 800
+    chunks = format_discord_message(long_text, max_len=1900)
 
-    app = AsyncApp(token="xoxb-test-token")
-    state = SlackBridgeState()
-    config = LabConfig(
-        model_director="test",
-        model_analyst="test",
-        model_specialist="test",
-        model_coverage="test",
-    )
-    prompts = {"coverage_md": ""}
-    _register_slack_handlers(app, config, prompts, "C00000000", state)
+    test_ticker = "TEST.HK"
+    test_dir = COVERAGE_STATE / test_ticker
+    test_dir.mkdir(parents=True, exist_ok=True)
+    _write_locked_section(test_ticker, "thesis")
+    lock_path = test_dir / COVERAGE_STATE_FILES["locked_sections"]
+    lock_ok = lock_path.is_file()
 
-    listener_types = sorted(
-        {
-            getattr(getattr(listener, "ack_function", None), "__name__", "")
-            for listener in app._async_listeners
-        }
-    )
-    handler_names = [n for n in listener_types if n]
-
+    slash_commands = ["research", "rerun", "rerun-all", "lock", "macro"]
     print(json.dumps({"parse_memo_sections": sections}, indent=2))
     print(json.dumps({"extract_memo_header": header}, indent=2))
     print(
         json.dumps(
             {
-                "handlers_registered": len(app._async_listeners),
-                "handler_names": handler_names,
-                "status": "slack_wiring_ok",
+                "format_discord_message_chunks": len(chunks),
+                "max_chunk_len": max(len(c) for c in chunks),
+                "write_locked_section": lock_ok,
+                "slash_commands": slash_commands,
+                "status": "discord_wiring_ok",
             },
             indent=2,
         )
@@ -1943,7 +1812,7 @@ def test_slack_wiring() -> int:
 
 
 async def run_cli(task: str) -> int:
-    """Local non-Slack entrypoint."""
+    """Local CLI entrypoint (no Discord required)."""
     try:
         config = load_config()
         prompts = load_prompt_registry()
@@ -1982,22 +1851,30 @@ def main() -> int:
         help='Research task for the Director, e.g. "Initiate coverage on 9988 HK"',
     )
     parser.add_argument(
-        "--slack",
+        "--discord",
         action="store_true",
-        help="Start Slack Socket Mode bridge",
+        help="Start Discord bot bridge",
     )
     parser.add_argument(
-        "--test-slack",
+        "--test-discord",
         action="store_true",
-        help="Run Slack wiring smoke test (no live tokens)",
+        help="Run Discord helper smoke test (no live tokens)",
+    )
+    parser.add_argument(
+        "--slack",
+        action="store_true",
+        help="Deprecated — use --discord",
     )
     args = parser.parse_args()
 
-    if args.test_slack:
-        return test_slack_wiring()
+    if args.test_discord:
+        return test_discord_helpers()
 
     if args.slack:
         return run_slack_mode()
+
+    if args.discord:
+        return run_discord_mode()
 
     if not args.task:
         parser.print_help()

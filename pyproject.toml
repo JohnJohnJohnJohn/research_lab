@@ -16,7 +16,7 @@ dependencies = [
     "numpy",
     "statsmodels",
     "python-dotenv",
-    "slack-bolt>=1.18",
+    "discord.py>=2.3",
 ]
 
 [project.optional-dependencies]

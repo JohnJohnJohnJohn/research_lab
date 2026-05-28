@@ -138,13 +138,13 @@ Why this choice:
 
 ***
 
-## 7. Slack Bridge — Single Front Door
+## 7. Discord Bridge — Single Front Door
 
-The user interacts with **only one bot in Slack**: the Director. Everything else runs programmatically behind it.
+The user interacts with **only one bot in Discord**: the Director. Everything else runs programmatically behind it.
 
 ```
-Slack #research-lab
-  └── @director-bot          ← only Slack-visible agent
+Discord #research-lab
+  └── @ResearchDirector          ← only Discord-visible agent
          │
          ▼
 OpenAI Agents SDK runtime (Claude via LiteLLM)
@@ -156,7 +156,7 @@ OpenAI Agents SDK runtime (Claude via LiteLLM)
 MCP capability layer
 ```
 
-This preserves Slack's UX wins (chat, mobile, audit trail, easy interjection) without paying the cost of in-channel orchestration (rate limits, latency, tool-call clutter, sprawl).
+This preserves Discord's UX wins (chat, mobile, audit trail, easy interjection) without paying the cost of in-channel orchestration (rate limits, latency, tool-call clutter, sprawl). The bot connects via **Discord Gateway (discord.py)**.
 
 ***
 
@@ -186,13 +186,16 @@ No chain-of-thought visible; verdict + rationale + citations only.
 
 ## 9. Feedback Model
 
-### Mechanics in Slack
-- **Threaded reply** under a section = feedback for that section's owning agent (Director routes automatically)
+### Mechanics in Discord
+- **Threaded reply** under a memo thread = feedback for re-run (Director routes automatically)
 - **Reactions** for lightweight signals:
   - 👍 / 👎 = approve / re-run with feedback
   - 🔁 = re-run section from scratch
   - 📌 = lock section verbatim; preserve on re-run
   - ⚠️ = compliance flag / hold
+
+  Reaction-based signals are **not implemented in v0.1** (Discord bridge). Feedback is via threaded replies and slash commands only.
+
 - **Slash commands** for explicit control: `/macro [feedback]`, `/rerun macro`, `/rerun all`, `/lock thesis`, `/escalate`
 
 ### Director Responsibilities
