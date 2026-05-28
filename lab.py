@@ -18,6 +18,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,6 +34,23 @@ ROOT = Path(__file__).resolve().parent
 
 LAB_MD = ROOT / "lab.md"
 COVERAGE_MD = ROOT / "coverage.md"
+COVERAGE_STATE = ROOT / "coverage_state"
+
+DOTTED_TICKER = re.compile(
+    r"\b([A-Z0-9]{1,6}\.(HK|US|SHG|SHE|LSE))\b",
+    re.IGNORECASE,
+)
+BARE_TICKER = re.compile(
+    r"\b([A-Z0-9]{1,6})\s+(HK|US|SHG|SHE)\b",
+    re.IGNORECASE,
+)
+
+COVERAGE_STATE_FILES: dict[str, str] = {
+    "standing_thesis": "standing_thesis.md",
+    "kpis": "kpis.md",
+    "regime_history": "regime_history.md",
+    "locked_sections": "locked_sections.md",
+}
 PROMPT_PATHS: dict[str, Path] = {
     "director": ROOT / "prompts" / "director.md",
     "us_analyst": ROOT / "prompts" / "regional" / "us.md",
@@ -292,21 +310,82 @@ def coverage_md_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
-def build_director_instructions(prompts: dict[str, str]) -> str:
-    """Director receives doctrine + active context per SPEC §2 bootstrap."""
+def detect_ticker(task: str) -> str | None:
+    """Detect TICKER.EXCHANGE from task text; return None if not found."""
+    match = DOTTED_TICKER.search(task)
+    if match:
+        return match.group(1).upper()
+    match = BARE_TICKER.search(task)
+    if match:
+        return f"{match.group(1).upper()}.{match.group(2).upper()}"
+    return None
+
+
+def load_coverage_state(ticker: str) -> dict[str, str]:
+    """
+    Load coverage_state/[TICKER]/ files into a dict.
+    Returns only files that exist; silently skips missing files.
+    Never raises — Coverage Agent handles gaps at runtime.
+    """
+    state_dir = COVERAGE_STATE / ticker
+    if not state_dir.is_dir():
+        return {}
+
+    loaded: dict[str, str] = {}
+    for key, filename in COVERAGE_STATE_FILES.items():
+        path = state_dir / filename
+        if not path.is_file():
+            continue
+        try:
+            loaded[key] = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+    return loaded
+
+
+def build_coverage_context(ticker: str, state: dict[str, str]) -> str:
+    """
+    Format loaded coverage_state files into a context block for
+    the Director. Returns empty string if state is empty.
+    """
+    if not state:
+        return ""
+
+    sections: list[str] = []
+    for key, filename in COVERAGE_STATE_FILES.items():
+        content = state.get(key)
+        if content:
+            sections.append(f"## {filename}\n\n{content}")
+
+    body = "\n\n".join(sections)
     return (
+        f"---\n\n# Coverage state — {ticker} "
+        f"(coverage_state/{ticker}/)\n\n{body}"
+    )
+
+
+def build_director_instructions(
+    prompts: dict[str, str],
+    coverage_context: str = "",
+) -> str:
+    """Director receives doctrine + active context per SPEC §2 bootstrap."""
+    instructions = (
         prompts["director"]
         + "\n\n---\n\n# Active doctrine (lab.md)\n\n"
         + prompts["lab_md"]
         + "\n\n---\n\n# Active context (coverage.md)\n\n"
         + prompts["coverage_md"]
     )
+    if coverage_context:
+        instructions += "\n\n" + coverage_context
+    return instructions
 
 
 def build_agents(
     prompts: dict[str, str],
     config: LabConfig,
     mcp_server: Any | None,
+    coverage_context: str = "",
 ) -> dict[str, Any]:
     """Instantiate all nine agents; attach MCP to data-consuming roles."""
     from agents import Agent
@@ -327,7 +406,7 @@ def build_agents(
 
     director = Agent(
         name="director",
-        instructions=build_director_instructions(prompts),
+        instructions=build_director_instructions(prompts, coverage_context),
         model=config.resolved_models["director"],
         handoffs=list(sub_agents.values()),
     )
@@ -382,9 +461,15 @@ async def run_director_task(task: str, config: LabConfig, prompts: dict[str, str
     configure_provider_environment(config)
     report = boot(config, prompts)
 
+    ticker = detect_ticker(task)
+    coverage_context = ""
+    if ticker:
+        state = load_coverage_state(ticker)
+        coverage_context = build_coverage_context(ticker, state)
+
     eodhd = build_eodhd_stdio_server(config)
     async with eodhd:
-        agents = build_agents(prompts, config, eodhd)
+        agents = build_agents(prompts, config, eodhd, coverage_context)
         director = agents["director"]
 
         run_config = RunConfig(model_provider=LitellmProvider())

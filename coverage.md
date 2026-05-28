@@ -1,9 +1,22 @@
-# Active Coverage Context
+# Coverage Universe
+_Last updated: 2026-05-28_
 
-**Status:** Stub — not yet populated.
+## Active
+| Ticker  | Name             | Sector              | Priority | Last Memo | Conviction |
+|---------|------------------|---------------------|----------|-----------|------------|
+| 9988.HK | Alibaba Group    | China Platform Tech | HIGH     | none      | none       |
+| 700.HK  | Tencent Holdings | China Platform Tech | HIGH     | none      | none       |
+| CRM.US  | Salesforce       | US Enterprise SaaS  | MEDIUM   | none      | none       |
 
-**Purpose:** This file is the active context surface. It will contain the watchlist (positions, monitoring, themes), open research questions, macro snapshot, and priority queue. Edited weekly or on portfolio change. Every research output is stamped with the `lab.md` version and `coverage.md` hash that produced it.
+## Monitoring
+_empty_
 
-**Governed by:** SPEC.md §2 (Two-File Control Plane), §11 (State Architecture), §12 (Operational Behavior).
+## Priority Queue
+1. 9988.HK — initiation pending
+2. 700.HK  — initiation pending
+3. CRM.US  — initiation pending
 
-**Content TBD:** Full coverage context for v0.1 — see SPEC.md §15 and §17.
+## Macro Snapshot
+_One-liner tags only. Macro Analyst expands from live data on demand._
+- CN/HK: growth=stable | policy=easing | liquidity=normal | risk=neutral
+- US:    growth=expanding | policy=neutral | liquidity=normal | risk=neutral

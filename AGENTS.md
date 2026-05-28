@@ -18,15 +18,15 @@ This document orients every agent that works on this repository. Read it after `
 
 ## Current Build Phase
 
-**`lab.py` v0.1 boot complete — next: `coverage.md` v1 or first end-to-end smoke test.**
+**`coverage.md` v1 + selective `coverage_state/` loading complete — next: first end-to-end smoke test.**
 
-Remaining v0.1 scope per SPEC.md §15: `coverage.md` v1, `peer_regression` skill, Slack bridge completion.
+Remaining v0.1 scope per SPEC.md §15: `peer_regression` skill, Slack bridge completion.
 
 ## Next Highest-Leverage Artifacts
 
 1. ~~All agent prompts (Director, regional, specialists, Coverage Agent)~~ — **done** (v0.1.0).
 2. ~~**`lab.py` v0.1 boot**~~ — **done** (v0.1.0): env, prompts, agents, EODHD MCP, local CLI.
-3. **`coverage.md` v1** — active context for end-to-end runs.
+3. ~~**`coverage.md` v1**~~ — **done** (v0.1.1): thin dispatch index + seeded `coverage_state/` for 9988.HK, 700.HK, CRM.US; selective Director injection in `lab.py`.
 4. **`peer_regression` skill** — Phase 1 peer regression execution.
 5. **Slack bridge** — complete `run_slack_mode()` / `handle_slack_message()` seam.
 
@@ -82,6 +82,8 @@ Architectural decisions made beyond what SPEC.md specifies, with rationale.
 | v0.1.0 lab.py | EODHD MCP via `MCPServerStdio` subprocess; attached to regional analysts + valuation + sector. | SPEC §5.1 self-describing MCP; boot wiring dict `CAPABILITIES` only. |
 | v0.1.0 lab.py | Director handoffs to all eight sub-agents; no multi-phase choreography in code. | Orchestration stays in Director prompt; boot only instantiates agents. |
 | v0.1.0 lab.py | `pyproject.toml` uses `openai-agents[litellm]` for multi-provider models. | Required for `.env.example` provider prefixes without scattering provider logic. |
+| v0.1.1 coverage | `coverage.md` is a thin dispatch index only (<40 lines); per-name depth lives in `coverage_state/[TICKER]/`. | Injected wholesale into Director context every run; flat per-name detail would swamp context window at scale. |
+| v0.1.1 lab.py | `detect_ticker()` + `load_coverage_state()` + `build_coverage_context()` inject task-scoped state before `Runner.run()`. | Director gets thin `coverage.md` always; relevant `coverage_state/` files only when ticker detected in task. `memo_history/` excluded — Coverage Agent handles memo injection. |
 
 ### Proposed SPEC.md §13 edits (not applied — human confirmation required)
 
@@ -111,3 +113,4 @@ Architectural decisions made beyond what SPEC.md specifies, with rationale.
 | 2026-05-27 | Specialist prompts agent | Revised specialist prompts to v0.1.1 per full task spec (verbatim output contracts). |
 | 2026-05-27 | Coverage Agent agent | Authored prompts/coverage/agent.md v0.1.0 — stateful name-scoped coverage memory. |
 | 2026-05-27 | lab.py boot agent | Implemented lab.py v0.1 — config, prompts, nine agents, EODHD MCP, local CLI. |
+| 2026-05-28 | coverage refactor agent | coverage.md v1 thin index; seeded coverage_state/ for 9988.HK, 700.HK, CRM.US; lab.py selective state injection. |
