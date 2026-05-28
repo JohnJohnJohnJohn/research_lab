@@ -18,9 +18,11 @@ This document orients every agent that works on this repository. Read it after `
 
 ## Current Build Phase
 
-**peer_regression skill complete — first end-to-end smoke test is next.**
+**Programmatic pipeline (Path A) complete — smoke test passed 2026-05-28.**
 
 Remaining v0.1 scope per SPEC.md §15: Slack bridge completion.
+
+Next: improve classify `is_covered` accuracy against `coverage.md`; verify `peer_regression_tool` invocation on OpenRouter models.
 
 ## Next Highest-Leverage Artifacts
 
@@ -80,7 +82,9 @@ Architectural decisions made beyond what SPEC.md specifies, with rationale.
 | v0.1.0 lab.py | Prompts loaded from disk at startup into in-memory dict; no templating engine. | Task constraint; Director gets `lab.md` + `coverage.md` appended to instructions. |
 | v0.1.0 lab.py | Slack bridge is stub only (`run_slack_mode`, `handle_slack_message`); local CLI is v0.1 entrypoint. | SPEC §7 full Socket Mode deferred; missing Slack vars must not block CLI. |
 | v0.1.0 lab.py | EODHD MCP via `MCPServerStdio` subprocess; attached to regional analysts + valuation + sector. | SPEC §5.1 self-describing MCP; boot wiring dict `CAPABILITIES` only. |
-| v0.1.0 lab.py | Director handoffs to all eight sub-agents; no multi-phase choreography in code. | Orchestration stays in Director prompt; boot only instantiates agents. |
+| v0.1.0 lab.py | ~~Director handoffs to all eight sub-agents; no multi-phase choreography in code.~~ **Superseded v0.1.3** — see v0.1.3 programmatic pipeline. | Orchestration stays in Director prompt; boot only instantiates agents. **Failed smoke test 2026-05-28:** OpenRouter models never invoked SDK handoffs. |
+| v0.1.3 lab.py | **Programmatic pipeline replaces prompt-only handoff routing** after smoke test failure 2026-05-28. Director operates in classify and synthesize modes only. Sub-agent dispatch is sequential Python; no SDK handoffs used. | Path A fix for RC-1/RC-2/RC-3/RC-5/RC-7. `run_pipeline()` in `lab.py` calls each agent step with segmented context. DUAL region analysts run sequentially (shared MCP subprocess). |
+| v0.1.3 lab.py | `peer_regression` wrapped as `@function_tool` on regional analysts (us, hk, china_ah). | RC-4 fix. **Known gap:** smoke test 2026-05-28 — HK analyst used MCP price tools and manual peer analysis; `peer_regression_tool` not invoked. Tool attachment is best-effort pending OpenRouter + LitellmProvider tool-use verification. |
 | v0.1.0 lab.py | `pyproject.toml` uses `openai-agents[litellm]` for multi-provider models. | Required for `.env.example` provider prefixes without scattering provider logic. |
 | v0.1.1 coverage | `coverage.md` is a thin dispatch index only (<40 lines); per-name depth lives in `coverage_state/[TICKER]/`. | Injected wholesale into Director context every run; flat per-name detail would swamp context window at scale. |
 | v0.1.1 lab.py | `detect_ticker()` + `load_coverage_state()` + `build_coverage_context()` inject task-scoped state before `Runner.run()`. | Director gets thin `coverage.md` always; relevant `coverage_state/` files only when ticker detected in task. `memo_history/` excluded — Coverage Agent handles memo injection. |
@@ -118,4 +122,4 @@ Architectural decisions made beyond what SPEC.md specifies, with rationale.
 | 2026-05-27 | Coverage Agent agent | Authored prompts/coverage/agent.md v0.1.0 — stateful name-scoped coverage memory. |
 | 2026-05-27 | lab.py boot agent | Implemented lab.py v0.1 — config, prompts, nine agents, EODHD MCP, local CLI. |
 | 2026-05-28 | coverage refactor agent | coverage.md v1 thin index; seeded coverage_state/ for 9988.HK, 700.HK, CRM.US; lab.py selective state injection. |
-| 2026-05-28 | peer_regression agent | Implemented skills/peer_regression.py; SKILLS wiring in lab.py. |
+| 2026-05-28 | Path A orchestration agent | Programmatic pipeline in lab.py; director.md + coverage/agent.md runtime notes; smoke test 9988.HK passed (7 steps, status completed). |

@@ -20,7 +20,7 @@ import json
 import os
 import re
 import sys
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -104,6 +104,14 @@ CAPABILITIES: dict[str, dict[str, Any]] = {
     },
 }
 
+SPECIALIST_ORDER = ["sector_specialist", "valuation_specialist", "risk_specialist"]
+REGIONAL_ROLES: dict[str, str | list[str]] = {
+    "HK": "hk_analyst",
+    "US": "us_analyst",
+    "CN": "china_ah_analyst",
+    "DUAL": ["hk_analyst", "china_ah_analyst"],
+}
+
 SKILLS: dict[str, dict[str, Any]] = {
     "peer_regression": {
         "module": "skills.peer_regression",
@@ -114,7 +122,19 @@ SKILLS: dict[str, dict[str, Any]] = {
             "china_ah_analyst",
         ],
     },
-}
+        }
+
+
+@dataclass
+class DispatchPlan:
+    ticker: str | None
+    exchange: str | None
+    region: str
+    rigor: str
+    is_covered: bool
+    agents_needed: list[str]
+    task_type: str
+    raw_classification: str
 
 
 class LabConfigError(RuntimeError):
@@ -408,38 +428,83 @@ def build_director_instructions(
     return instructions
 
 
+def build_peer_regression_tool() -> Any:
+    """Wrap peer_regression skill as an Agents SDK function tool."""
+    from agents import function_tool
+
+    @function_tool
+    def peer_regression_tool(
+        target_ticker: str,
+        peer_tickers: list[str],
+        lookback_months: int = 12,
+    ) -> str:
+        """
+        Run OLS peer regression for Phase 1 factor discovery.
+        Given a target ticker and list of peer tickers, fetches trailing price
+        history and fundamentals, runs regression, and returns top explanatory
+        factors with direction and t-statistics. Use at the start of Phase 1
+        before deriving the FactorRegime. Returns JSON string of PeerRegressionResult.
+        """
+        result = run_peer_regression(
+            target_ticker=target_ticker,
+            peer_tickers=peer_tickers,
+            lookback_months=lookback_months,
+        )
+        return json.dumps(asdict(result))
+
+    return peer_regression_tool
+
+
 def build_agents(
     prompts: dict[str, str],
     config: LabConfig,
     mcp_server: Any | None,
-    coverage_context: str = "",
 ) -> dict[str, Any]:
-    """Instantiate all nine agents; attach MCP to data-consuming roles."""
+    """Instantiate agents for programmatic pipeline — no SDK handoffs."""
     from agents import Agent
 
     mcp_roles = set(CAPABILITIES["standard_market_data"]["assigned_roles"])
     mcp_list = [mcp_server] if mcp_server is not None else []
+    peer_tool = build_peer_regression_tool()
+    regional_tools = [peer_tool]
 
-    sub_agents: dict[str, Agent] = {}
+    agents: dict[str, Any] = {}
     for role in PROMPT_PATHS:
-        if role == "director":
-            continue
-        sub_agents[role] = Agent(
+        tools: list[Any] = []
+        if role in ("us_analyst", "hk_analyst", "china_ah_analyst"):
+            tools = regional_tools
+        agents[role] = Agent(
             name=role,
             instructions=prompts[role],
             model=config.resolved_models[role],
             mcp_servers=mcp_list if role in mcp_roles else [],
+            tools=tools,
         )
-
-    director = Agent(
-        name="director",
-        instructions=build_director_instructions(prompts, coverage_context),
-        model=config.resolved_models["director"],
-        handoffs=list(sub_agents.values()),
-    )
-
-    agents = {"director": director, **sub_agents}
     return agents
+
+
+def build_step_agent(
+    role: str,
+    instructions: str,
+    config: LabConfig,
+    mcp_server: Any | None,
+    tools: list[Any] | None = None,
+) -> Any:
+    """Create a single-step agent with overridden instructions."""
+    from agents import Agent
+
+    mcp_roles = set(CAPABILITIES["standard_market_data"]["assigned_roles"])
+    mcp_list = [mcp_server] if mcp_server is not None else []
+    if tools is None and role in ("us_analyst", "hk_analyst", "china_ah_analyst"):
+        tools = [build_peer_regression_tool()]
+
+    return Agent(
+        name=role,
+        instructions=instructions,
+        model=config.resolved_models[role],
+        mcp_servers=mcp_list if role in mcp_roles else [],
+        tools=tools or [],
+    )
 
 
 def build_eodhd_stdio_server(config: LabConfig) -> Any:
@@ -493,9 +558,212 @@ def resolve_max_output_tokens() -> int:
     return value
 
 
-async def run_director_task(task: str, config: LabConfig, prompts: dict[str, str]) -> dict[str, Any]:
-    """Route a user task through the Director via OpenAI Agents SDK."""
+def _log_step(step: str, **kwargs: Any) -> None:
+    print(json.dumps({"step": step, **kwargs}), flush=True)
+
+
+def extract_md_section(text: str, heading_prefix: str) -> str:
+    """Extract a markdown section starting at a ## heading."""
+    marker = f"## {heading_prefix}"
+    start = text.find(marker)
+    if start == -1:
+        return ""
+    rest = text[start + len(marker) :]
+    next_heading = rest.find("\n## ")
+    if next_heading == -1:
+        return marker + rest
+    return marker + rest[:next_heading]
+
+
+def _split_ticker_exchange(ticker: str | None) -> tuple[str | None, str | None]:
+    if not ticker:
+        return None, None
+    if "." in ticker:
+        code, exchange = ticker.rsplit(".", 1)
+        return code, exchange
+    return ticker, None
+
+
+def ticker_in_coverage_md(ticker: str, coverage_md: str) -> bool:
+    return ticker.upper() in coverage_md.upper()
+
+
+def infer_task_type(task: str) -> str:
+    lower = task.lower()
+    if "initiat" in lower:
+        return "initiation"
+    if "refresh" in lower:
+        return "refresh"
+    if "event" in lower:
+        return "event"
+    return "other"
+
+
+def infer_rigor(task_type: str) -> str:
+    if task_type == "initiation":
+        return "deep"
+    if task_type == "refresh":
+        return "surface"
+    if task_type == "event":
+        return "targeted"
+    return "deep"
+
+
+def infer_region(exchange: str | None) -> str:
+    if exchange in ("HK",):
+        return "HK"
+    if exchange in ("US",):
+        return "US"
+    if exchange in ("SHG", "SHE"):
+        return "CN"
+    return "HK"
+
+
+def default_agents_for_region(region: str) -> list[str]:
+    agents = ["macro_specialist", "sector_specialist", "valuation_specialist", "risk_specialist"]
+    if region == "DUAL":
+        agents.extend(["hk_analyst", "china_ah_analyst"])
+    elif region == "HK":
+        agents.append("hk_analyst")
+    elif region == "US":
+        agents.append("us_analyst")
+    elif region == "CN":
+        agents.append("china_ah_analyst")
+    return agents
+
+
+def default_dispatch_plan(task: str, coverage_md: str) -> DispatchPlan:
+    ticker = detect_ticker(task)
+    _code, exchange = _split_ticker_exchange(ticker)
+    task_type = infer_task_type(task)
+    region = infer_region(exchange)
+    is_covered = bool(ticker and ticker_in_coverage_md(ticker, coverage_md))
+    agents = default_agents_for_region(region)
+    if is_covered:
+        agents = ["coverage_agent", *agents]
+    return DispatchPlan(
+        ticker=ticker,
+        exchange=exchange,
+        region=region,
+        rigor=infer_rigor(task_type),
+        is_covered=is_covered,
+        agents_needed=agents,
+        task_type=task_type,
+        raw_classification="fallback: detect_ticker()",
+    )
+
+
+def parse_dispatch_plan(raw: str, task: str, coverage_md: str) -> DispatchPlan:
+    """Parse Director classify JSON; fall back on failure."""
+    match = re.search(r"\{[\s\S]*\}", raw)
+    if not match:
+        plan = default_dispatch_plan(task, coverage_md)
+        _log_step("classify_parse", status="fallback", reason="no JSON found")
+        return plan
+    try:
+        data = json.loads(match.group(0))
+        ticker = data.get("ticker")
+        if isinstance(ticker, str):
+            ticker = ticker.upper()
+        exchange = data.get("exchange")
+        region = str(data.get("region", infer_region(exchange))).upper()
+        rigor = str(data.get("rigor", "deep"))
+        is_covered = bool(data.get("is_covered", False))
+        agents_needed = data.get("agents_needed") or default_agents_for_region(region)
+        task_type = str(data.get("task_type", infer_task_type(task)))
+        return DispatchPlan(
+            ticker=ticker,
+            exchange=exchange,
+            region=region,
+            rigor=rigor,
+            is_covered=is_covered,
+            agents_needed=list(agents_needed),
+            task_type=task_type,
+            raw_classification=raw,
+        )
+    except (json.JSONDecodeError, TypeError, ValueError):
+        plan = default_dispatch_plan(task, coverage_md)
+        _log_step("classify_parse", status="fallback", reason="JSON parse error")
+        return plan
+
+
+def extract_sector_from_coverage(ticker: str | None, coverage_md: str) -> str:
+    if not ticker:
+        return "unknown"
+    for line in coverage_md.splitlines():
+        if ticker.upper() in line.upper() and "|" in line:
+            parts = [p.strip() for p in line.split("|") if p.strip()]
+            if len(parts) >= 3:
+                return parts[2]
+    return "unknown"
+
+
+def summarize_context(text: str, limit: int = 2000) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n...[truncated]..."
+
+
+def build_classify_instructions(
+    prompts: dict[str, str],
+    coverage_context: str,
+) -> str:
+    return (
+        prompts["lab_md"][:2000]
+        + "\n\n---\n\n# Active context (coverage.md)\n\n"
+        + prompts["coverage_md"]
+        + (f"\n\n{coverage_context}" if coverage_context else "")
+    )
+
+
+def build_synthesize_instructions(prompts: dict[str, str]) -> str:
+    director_synthesis = extract_md_section(prompts["director"], "4. Synthesis")
+    quality_gates = extract_md_section(prompts["lab_md"], "5. Quality Gates")
+    if not director_synthesis:
+        director_synthesis = prompts["director"]
+    return director_synthesis + "\n\n---\n\n" + quality_gates
+
+
+def _count_turns(result: Any) -> int:
+    items = getattr(result, "new_items", None)
+    if items:
+        return len(items)
+    return 1
+
+
+async def _run_agent_step(
+    role: str,
+    instructions: str,
+    user_message: str,
+    config: LabConfig,
+    run_config: Any,
+    mcp_server: Any | None,
+    max_turns: int,
+    tools: list[Any] | None = None,
+) -> tuple[str, int, str]:
     from agents import Runner
+
+    agent = build_step_agent(role, instructions, config, mcp_server, tools=tools)
+    try:
+        result = await Runner.run(
+            agent,
+            user_message,
+            run_config=run_config,
+            max_turns=max_turns,
+        )
+        output = str(result.final_output or "")
+        turns = _count_turns(result)
+        return output, turns, "ok"
+    except Exception as exc:
+        return f"[step error: {exc}]", 0, "error"
+
+
+async def run_pipeline(
+    task: str,
+    config: LabConfig,
+    prompts: dict[str, str],
+) -> dict[str, Any]:
+    """Programmatic multi-agent research pipeline (Path A)."""
     from agents.extensions.models.litellm_provider import LitellmProvider
     from agents.model_settings import ModelSettings
     from agents.run_config import RunConfig
@@ -509,29 +777,259 @@ async def run_director_task(task: str, config: LabConfig, prompts: dict[str, str
         state = load_coverage_state(ticker)
         coverage_context = build_coverage_context(ticker, state)
 
+    steps: dict[str, Any] = {}
+    specialist_outputs: dict[str, str] = {}
+    pipeline_status = "completed"
+
+    max_tokens = resolve_max_output_tokens()
+    run_config = RunConfig(
+        model_provider=LitellmProvider(),
+        model_settings=ModelSettings(max_tokens=max_tokens),
+    )
+
     eodhd = build_eodhd_stdio_server(config)
     async with eodhd:
-        agents = build_agents(prompts, config, eodhd, coverage_context)
-        director = agents["director"]
-
-        max_tokens = resolve_max_output_tokens()
-        run_config = RunConfig(
-            model_provider=LitellmProvider(),
-            model_settings=ModelSettings(max_tokens=max_tokens),
+        # Step 1 — Director classify
+        classify_msg = (
+            f"Task: {task}\n\n"
+            "Return a JSON object with exactly these fields: "
+            "ticker, exchange, region, rigor, is_covered, agents_needed, task_type. "
+            "agents_needed must be a list drawn from: "
+            "[coverage_agent, macro_specialist, us_analyst, hk_analyst, "
+            "china_ah_analyst, sector_specialist, valuation_specialist, risk_specialist].\n\n"
+            "Do not perform analysis. Do not produce a memo. Return JSON only — no prose."
         )
-        result = await Runner.run(
-            director,
-            task,
-            run_config=run_config,
+        classify_out, classify_turns, classify_status = await _run_agent_step(
+            "director",
+            build_classify_instructions(prompts, coverage_context),
+            classify_msg,
+            config,
+            run_config,
+            None,
+            max_turns=3,
+        )
+        steps["classify"] = classify_out
+        _log_step(
+            "classify",
+            turns=classify_turns,
+            output_chars=len(classify_out),
+            status=classify_status,
+        )
+        if classify_status != "ok":
+            return {
+                "status": "failed",
+                "task": task,
+                "dispatch_plan": None,
+                "steps": steps,
+                "final_memo": "",
+                "boot": report.to_dict(),
+            }
+
+        plan = parse_dispatch_plan(classify_out, task, prompts["coverage_md"])
+        if not plan.ticker:
+            plan = default_dispatch_plan(task, prompts["coverage_md"])
+            _log_step("classify", status="fallback", reason="empty ticker in plan")
+
+        # Step 2 — Coverage Agent
+        if plan.is_covered and "coverage_agent" in plan.agents_needed:
+            coverage_msg = (
+                f"Ticker: {plan.ticker}\n"
+                f"Trigger: {plan.task_type}\n"
+                f"Rigor: {plan.rigor}\n\n"
+                "Coverage state loaded below. Produce a ContextInjectionPackage "
+                "per your §7 output contract. Return structured output only.\n\n"
+                f"{coverage_context or 'No coverage_state files found.'}"
+            )
+            ctx_out, ctx_turns, ctx_status = await _run_agent_step(
+                "coverage_agent",
+                prompts["coverage_agent"],
+                coverage_msg,
+                config,
+                run_config,
+                None,
+                max_turns=5,
+            )
+            context_package = ctx_out
+            steps["coverage_agent"] = ctx_out
+            _log_step(
+                "coverage_agent",
+                turns=ctx_turns,
+                output_chars=len(ctx_out),
+                status=ctx_status,
+            )
+            if ctx_status != "ok":
+                pipeline_status = "partial"
+        else:
+            context_package = "No prior coverage — first touch."
+            steps["coverage_agent"] = context_package
+            _log_step(
+                "coverage_agent",
+                skipped=True,
+                reason="not covered or not in agents_needed",
+            )
+
+        # Step 3 — Macro
+        sector = extract_sector_from_coverage(plan.ticker, prompts["coverage_md"])
+        macro_msg = (
+            f"Region: {plan.region}\n"
+            f"Sector: {sector}\n"
+            f"Rigor: {plan.rigor}\n"
+            f"Context: {summarize_context(context_package)}\n\n"
+            "Produce a MacroRegimeTag per your §4 output contract. "
+            "Return structured output only."
+        )
+        macro_out, macro_turns, macro_status = await _run_agent_step(
+            "macro_specialist",
+            prompts["macro_specialist"],
+            macro_msg,
+            config,
+            run_config,
+            None,
+            max_turns=5,
+        )
+        macro_tag = macro_out
+        steps["macro"] = macro_out
+        _log_step("macro", turns=macro_turns, output_chars=len(macro_out), status=macro_status)
+        if macro_status != "ok":
+            pipeline_status = "partial"
+
+        # Step 4 — Regional analyst(s), sequential
+        analyst_parts: list[str] = []
+        regional_roles = REGIONAL_ROLES.get(plan.region, "hk_analyst")
+        if isinstance(regional_roles, str):
+            regional_roles = [regional_roles]
+
+        for analyst_role in regional_roles:
+            if analyst_role not in plan.agents_needed:
+                continue
+            analyst_msg = (
+                f"Task: {plan.task_type} on {plan.ticker}\n"
+                f"Rigor: {plan.rigor}\n"
+                f"MacroRegimeTag: {summarize_context(macro_tag, 1500)}\n"
+                f"Prior context: {summarize_context(context_package, 1500)}\n\n"
+                "Execute Phase 1 (regime discovery) then Phase 2 (stock analysis). "
+                "Return structured output per your §5 output contract: "
+                "FactorRegime object + Sections 1-4 content."
+            )
+            out, turns, status = await _run_agent_step(
+                analyst_role,
+                prompts[analyst_role],
+                analyst_msg,
+                config,
+                run_config,
+                eodhd,
+                max_turns=20,
+            )
+            analyst_parts.append(f"--- {analyst_role} ---\n{out}")
+            steps[analyst_role] = out
+            _log_step(
+                analyst_role,
+                turns=turns,
+                output_chars=len(out),
+                status=status,
+            )
+            if status != "ok":
+                pipeline_status = "partial"
+
+        analyst_output = "\n\n".join(analyst_parts) if analyst_parts else "[no analyst output]"
+        steps["analyst"] = analyst_output
+
+        # Step 5 — Specialists
+        valuation_output = ""
+        for spec_role in SPECIALIST_ORDER:
+            if spec_role not in plan.agents_needed:
+                continue
+            if spec_role == "sector_specialist":
+                spec_msg = (
+                    f"Ticker: {plan.ticker}\n"
+                    f"Region: {plan.region}\n"
+                    f"Sector: {sector}\n"
+                    f"FactorRegime (from analyst): {summarize_context(analyst_output, 2000)}\n\n"
+                    "Return structured output per your §4 output contract."
+                )
+            elif spec_role == "valuation_specialist":
+                spec_msg = (
+                    f"FactorRegime: {summarize_context(analyst_output, 1500)}\n"
+                    f"Analyst Phase 2 output: {summarize_context(analyst_output, 2500)}\n"
+                    f"MacroRegimeTag: {summarize_context(macro_tag, 1000)}\n"
+                    f"Rigor: {plan.rigor}\n\n"
+                    "Return ValuationOutput per your §4 output contract."
+                )
+            else:
+                spec_msg = (
+                    f"FactorRegime: {summarize_context(analyst_output, 1500)}\n"
+                    f"ValuationOutput: {summarize_context(valuation_output, 1500)}\n"
+                    f"MacroRegimeTag: {summarize_context(macro_tag, 1000)}\n"
+                    f"Analyst output: {summarize_context(analyst_output, 2000)}\n\n"
+                    "Return ScenarioOutput per your §4 output contract."
+                )
+
+            out, turns, status = await _run_agent_step(
+                spec_role,
+                prompts[spec_role],
+                spec_msg,
+                config,
+                run_config,
+                eodhd if spec_role in ("sector_specialist", "valuation_specialist") else None,
+                max_turns=8,
+            )
+            specialist_outputs[spec_role] = out
+            if spec_role == "valuation_specialist":
+                valuation_output = out
+            _log_step(
+                spec_role,
+                turns=turns,
+                output_chars=len(out),
+                status=status,
+            )
+            if status != "ok":
+                pipeline_status = "partial"
+
+        steps["specialists"] = specialist_outputs
+
+        # Step 6 — Director synthesize
+        spec_block = "\n".join(
+            f"--- {role} ---\n{body}" for role, body in specialist_outputs.items()
+        )
+        synth_msg = (
+            f"Ticker: {plan.ticker} | Region: {plan.region}\n"
+            f"Task: {plan.task_type} | Rigor: {plan.rigor}\n\n"
+            "Sub-agent outputs:\n"
+            f"--- CONTEXT PACKAGE ---\n{context_package}\n"
+            f"--- MACRO REGIME ---\n{macro_tag}\n"
+            f"--- ANALYST OUTPUT (Sections 1-4) ---\n{analyst_output}\n"
+            f"--- SPECIALIST OUTPUTS ---\n{spec_block or '[none]'}\n\n"
+            "Synthesize these into the final 8-section investment memo per the memo template. "
+            f"Apply lab.md §5 quality gates. Stamp with lab.md version and "
+            f"coverage.md hash {report.coverage_md_hash}. Return the complete memo."
+        )
+        memo_out, memo_turns, memo_status = await _run_agent_step(
+            "director",
+            build_synthesize_instructions(prompts),
+            synth_msg,
+            config,
+            run_config,
+            None,
             max_turns=10,
         )
+        steps["memo"] = memo_out
+        _log_step("memo", turns=memo_turns, output_chars=len(memo_out), status=memo_status)
+        if memo_status != "ok":
+            pipeline_status = "partial"
 
     return {
-        "boot": report.to_dict(),
+        "status": pipeline_status,
         "task": task,
-        "director_response": result.final_output,
-        "status": "completed",
+        "dispatch_plan": asdict(plan),
+        "steps": steps,
+        "final_memo": memo_out,
+        "boot": report.to_dict(),
     }
+
+
+async def run_director_task(task: str, config: LabConfig, prompts: dict[str, str]) -> dict[str, Any]:
+    """Deprecated alias — use run_pipeline()."""
+    return await run_pipeline(task, config, prompts)
 
 
 async def run_cli(task: str) -> int:
@@ -544,7 +1042,7 @@ async def run_cli(task: str) -> int:
         return 1
 
     try:
-        output = await run_director_task(task, config, prompts)
+        output = await run_pipeline(task, config, prompts)
         print(json.dumps(output, indent=2, default=str))
         return 0
     except LabConfigError as exc:
@@ -587,7 +1085,7 @@ def run_slack_mode() -> int:
         )
         return 1
 
-    # TODO(SPEC §7): Socket Mode listener → handle_slack_message(event) → run_director_task
+    # TODO(SPEC §7): Socket Mode listener → handle_slack_message(event) → run_pipeline
     print(
         "Slack env present. Full Slack bridge not implemented in v0.1 boot. "
         "Use: python lab.py \"<task>\" for local Director runs.",
@@ -597,7 +1095,7 @@ def run_slack_mode() -> int:
 
 def handle_slack_message(event: dict[str, Any]) -> None:
     """Placeholder interface for SPEC §7 Slack → Director routing."""
-    # TODO: parse event text, call asyncio.run(run_director_task(...)), post threaded memo
+    # TODO: parse event text, call asyncio.run(run_pipeline(...)), post threaded memo
     raise NotImplementedError("Slack message handling is not implemented in lab.py v0.1")
 
 

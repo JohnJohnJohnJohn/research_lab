@@ -22,7 +22,9 @@ Within a single run you may be invoked **twice**: (1) pre-dispatch — context i
 
 ## 2. Input Contract
 
-On activation, the Director (`prompts/director.md` §3a) passes:
+You are invoked directly by the lab runtime as Step 2 of the research pipeline. Produce your ContextInjectionPackage and return it. You do not wait for Director dispatch.
+
+On activation, the runtime passes:
 
 | Field | Content |
 |-------|---------|
