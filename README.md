@@ -33,7 +33,7 @@ MCP capability layer
 
 ## Current build phase
 
-**Pre-v0.1 — scaffolding.** Repository structure and stubs are in place. v0.1 scope: `lab.md` + `coverage.md` v1, EODHD MCP, peer_regression skill, Director + US analyst, single-stock memo end-to-end via Slack bridge (SPEC.md §15).
+**v0.1.2** — `lab.py` boot, coverage refactor, peer_regression skill, OpenRouter model routing. Next: first end-to-end smoke test, then Slack bridge (SPEC.md §15).
 
 ## Repository layout
 
@@ -45,11 +45,56 @@ research_lab/
 ├── skills/                   # in-process Python utilities
 ├── coverage_state/           # per-ticker persistent memory
 ├── transcripts/              # per-run audit logs
-└── lab.py                    # boot script (stub)
+└── lab.py                    # boot script (Director entrypoint)
 ```
 
-## Getting started (future)
+## Getting started
 
-Implementation begins in v0.1. Dependencies are declared in `pyproject.toml` but not yet installed or wired. Do not run `lab.py` — it is a stub.
+### Requirements
+
+- Python **3.11+**
+- API keys in `.env`: `OPENROUTER_API_KEY`, `EODHD_API_KEY`, and `LAB_MODEL_*` vars (see `.env.example`)
+
+### Install (recommended: editable)
+
+From the repo root:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -e .
+```
+
+Optional dev tools (pytest, ruff):
+
+```powershell
+pip install -e ".[dev]"
+```
+
+This installs the `research-lab` CLI and the `skills` package. **Use editable install** for development — `lab.py` reads `prompts/`, `lab.md`, and `coverage.md` from the source tree.
+
+### Configure
+
+```powershell
+copy .env.example .env
+# Edit .env — set OPENROUTER_API_KEY, EODHD_API_KEY, LAB_MODEL_DIRECTOR, etc.
+```
+
+### Verify boot
+
+```powershell
+python -c "from lab import load_config; print(load_config().resolved_models)"
+```
+
+### Run
+
+```powershell
+research-lab "Initiate coverage on 9988 HK"
+# or
+python lab.py "Initiate coverage on 9988 HK"
+```
+
+Output is JSON to stdout. Slack mode (`python lab.py --slack`) is a stub in v0.1.
 
 For agents: read **SPEC.md**, then **AGENTS.md**, then identify the next task for the current build phase.

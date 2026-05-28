@@ -1,0 +1,11 @@
+include lab.py
+include lab.md
+include coverage.md
+include SPEC.md
+include AGENTS.md
+include README.md
+recursive-include skills *.py
+recursive-include prompts *.md
+recursive-include mcp_servers *.py *.md *.example
+recursive-include coverage_state *
+recursive-include transcripts .gitkeep

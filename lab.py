@@ -137,6 +137,7 @@ class LabConfig:
     deepseek_api_key: str | None = None
     dashscope_api_key: str | None = None
     dashscope_api_base: str | None = None
+    openrouter_api_key: str | None = None
     eodhd_api_key: str | None = None
     slack_bot_token: str | None = None
     slack_app_token: str | None = None
@@ -202,6 +203,7 @@ def load_config() -> LabConfig:
         deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", "").strip() or None,
         dashscope_api_key=os.getenv("DASHSCOPE_API_KEY", "").strip() or None,
         dashscope_api_base=os.getenv("DASHSCOPE_API_BASE", "").strip() or None,
+        openrouter_api_key=os.getenv("OPENROUTER_API_KEY", "").strip() or None,
         eodhd_api_key=os.getenv("EODHD_API_KEY", "").strip() or None,
         slack_bot_token=os.getenv("SLACK_BOT_TOKEN", "").strip() or None,
         slack_app_token=os.getenv("SLACK_APP_TOKEN", "").strip() or None,
@@ -250,6 +252,14 @@ def validate_provider_key_for_model(model: str, config: LabConfig) -> None:
     """Fail fast when the selected model's provider API key is absent."""
     model_lower = model.lower()
 
+    if model_lower.startswith("openrouter/"):
+        if not config.openrouter_api_key:
+            raise LabConfigError(
+                "Model "
+                f"{model!r} requires OPENROUTER_API_KEY (set in .env)."
+            )
+        return
+
     if model_lower.startswith("deepseek/"):
         if not config.deepseek_api_key:
             raise LabConfigError(
@@ -289,7 +299,7 @@ def validate_provider_key_for_model(model: str, config: LabConfig) -> None:
             "Model "
             f"{model!r} has no recognized provider prefix; "
             "set OPENAI_API_KEY or use a prefixed model "
-            "(deepseek/, dashscope/, claude-*)."
+            "(openrouter/, deepseek/, dashscope/, claude-*)."
         )
 
 
@@ -305,8 +315,11 @@ def configure_provider_environment(config: LabConfig) -> str:
         os.environ.setdefault("DASHSCOPE_API_KEY", config.dashscope_api_key)
     if config.dashscope_api_base:
         os.environ.setdefault("DASHSCOPE_API_BASE", config.dashscope_api_base)
+    if config.openrouter_api_key:
+        os.environ.setdefault("OPENROUTER_API_KEY", config.openrouter_api_key)
 
     # SPEC §6: OpenAI Agents SDK + LiteLLM adapter for multi-provider models.
+    os.environ.setdefault("LITELLM_LOG", "ERROR")
     return "openai-agents + LitellmProvider"
 
 
@@ -466,10 +479,25 @@ def boot(config: LabConfig, prompts: dict[str, str]) -> BootReport:
     )
 
 
+def resolve_max_output_tokens() -> int:
+    """Cap LLM output tokens — OpenRouter pre-checks cost against max_tokens."""
+    raw = os.getenv("LAB_MAX_OUTPUT_TOKENS", "4096").strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise LabConfigError(
+            f"LAB_MAX_OUTPUT_TOKENS must be an integer, got {raw!r}."
+        ) from exc
+    if value < 256:
+        raise LabConfigError("LAB_MAX_OUTPUT_TOKENS must be at least 256.")
+    return value
+
+
 async def run_director_task(task: str, config: LabConfig, prompts: dict[str, str]) -> dict[str, Any]:
     """Route a user task through the Director via OpenAI Agents SDK."""
     from agents import Runner
     from agents.extensions.models.litellm_provider import LitellmProvider
+    from agents.model_settings import ModelSettings
     from agents.run_config import RunConfig
 
     configure_provider_environment(config)
@@ -486,7 +514,11 @@ async def run_director_task(task: str, config: LabConfig, prompts: dict[str, str
         agents = build_agents(prompts, config, eodhd, coverage_context)
         director = agents["director"]
 
-        run_config = RunConfig(model_provider=LitellmProvider())
+        max_tokens = resolve_max_output_tokens()
+        run_config = RunConfig(
+            model_provider=LitellmProvider(),
+            model_settings=ModelSettings(max_tokens=max_tokens),
+        )
         result = await Runner.run(
             director,
             task,

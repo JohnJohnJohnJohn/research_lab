@@ -1,11 +1,11 @@
 [project]
 name = "research_lab"
-version = "0.0.1"
+version = "0.1.2"
 description = "Region-aware, fundamental-driven AI research organization (see SPEC.md)"
 readme = "README.md"
 requires-python = ">=3.11"
+license = { text = "Proprietary" }
 
-# Declared dependencies — intent only; versions not pinned at scaffold stage.
 dependencies = [
     "openai-agents[litellm]",
     "anthropic",
@@ -13,10 +13,62 @@ dependencies = [
     "httpx",
     "pydantic",
     "pandas",
+    "numpy",
     "statsmodels",
     "python-dotenv",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[project.scripts]
+research-lab = "lab:main"
+
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["lab"]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["skills*"]
+exclude = ["mcp_servers*", "prompts*", "coverage_state*", "transcripts*", ".cursor*"]
+
+# Repo-root assets (prompts, doctrine, MCP servers) ship in the sdist/wheel for
+# non-editable installs. Editable install (`pip install -e .`) is recommended for
+# development — lab.py resolves paths relative to the source tree.
+[tool.setuptools.data-files]
+"share/research_lab/prompts" = [
+    "prompts/director.md",
+    "prompts/coverage/agent.md",
+    "prompts/coverage/template.md",
+    "prompts/regional/us.md",
+    "prompts/regional/hk.md",
+    "prompts/regional/china_ah.md",
+    "prompts/specialists/macro.md",
+    "prompts/specialists/sector.md",
+    "prompts/specialists/valuation.md",
+    "prompts/specialists/risk.md",
+]
+"share/research_lab" = [
+    "lab.md",
+    "coverage.md",
+    "SPEC.md",
+    "AGENTS.md",
+]
+"share/research_lab/mcp_servers/eodhd" = [
+    "mcp_servers/eodhd/client.py",
+    "mcp_servers/eodhd/server.py",
+    "mcp_servers/eodhd/README.md",
+    "mcp_servers/eodhd/.env.example",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
