@@ -112,6 +112,21 @@ REGIONAL_ROLES: dict[str, str | list[str]] = {
     "DUAL": ["hk_analyst", "china_ah_analyst"],
 }
 
+DEFAULT_PEERS: dict[str, list[str]] = {
+    "9988.HK": [
+        "700.HK", "3690.HK", "9618.HK", "BABA.US",
+        "JD.US", "PDD.US", "BIDU.US", "9999.HK",
+    ],
+    "700.HK": [
+        "9988.HK", "3690.HK", "9618.HK", "NTES.US",
+        "9999.HK", "1024.HK", "2382.HK",
+    ],
+    "CRM.US": [
+        "NOW.US", "ORCL.US", "SAP.US", "ADBE.US",
+        "WDAY.US", "MDB.US", "HUBS.US",
+    ],
+}
+
 SKILLS: dict[str, dict[str, Any]] = {
     "peer_regression": {
         "module": "skills.peer_regression",
@@ -368,6 +383,51 @@ def detect_ticker(task: str) -> str | None:
     return None
 
 
+def _parse_coverage_active_table(coverage_md_text: str) -> list[str]:
+    """Parse ticker column from the ## Active table in coverage.md."""
+    tickers: list[str] = []
+    in_active = False
+    for line in coverage_md_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## Active"):
+            in_active = True
+            continue
+        if in_active and stripped.startswith("## "):
+            break
+        if not in_active or not stripped.startswith("|"):
+            continue
+        if "---" in stripped or stripped.lower().startswith("| ticker"):
+            continue
+        parts = [p.strip() for p in stripped.split("|") if p.strip()]
+        if parts:
+            tickers.append(parts[0].upper())
+    return tickers
+
+
+def get_covered_tickers(coverage_md_text: str) -> list[str]:
+    """Return all tickers in the Active table of coverage.md."""
+    try:
+        return _parse_coverage_active_table(coverage_md_text)
+    except Exception as exc:
+        _log_step("coverage_parse", status="warning", error=str(exc))
+        return []
+
+
+def is_ticker_covered(ticker: str, coverage_md_text: str) -> bool:
+    """
+    Return True if ticker appears in the Active table of coverage.md.
+    Matches the ticker column exactly (case-insensitive). Never raises.
+    """
+    if not ticker or not ticker.strip():
+        return False
+    try:
+        normalized = ticker.strip().upper()
+        return normalized in {t.upper() for t in get_covered_tickers(coverage_md_text)}
+    except Exception as exc:
+        _log_step("coverage_parse", status="warning", error=str(exc))
+        return False
+
+
 def load_coverage_state(ticker: str) -> dict[str, str]:
     """
     Load coverage_state/[TICKER]/ files into a dict.
@@ -585,7 +645,64 @@ def _split_ticker_exchange(ticker: str | None) -> tuple[str | None, str | None]:
 
 
 def ticker_in_coverage_md(ticker: str, coverage_md: str) -> bool:
-    return ticker.upper() in coverage_md.upper()
+    return is_ticker_covered(ticker, coverage_md)
+
+
+def normalize_region(region: str, exchange: str | None = None) -> str:
+    """Map LLM region strings to pipeline region codes."""
+    r = (region or "").upper()
+    if r in ("HK", "HONG KONG", "HKEX"):
+        return "HK"
+    if r in ("US", "USA", "UNITED STATES", "NYSE", "NASDAQ"):
+        return "US"
+    if r in ("CN", "CHINA", "A-SHARE", "H-SHARE", "SHG", "SHE"):
+        return "CN"
+    if r == "DUAL":
+        return "DUAL"
+    if exchange:
+        return infer_region(exchange.upper())
+    return r or "HK"
+
+
+def normalize_rigor(rigor: str) -> str:
+    """Map LLM rigor strings to pipeline rigor codes."""
+    r = (rigor or "").lower()
+    if r in ("deep", "high", "full"):
+        return "deep"
+    if r in ("surface", "low", "light", "refresh"):
+        return "surface"
+    if r in ("targeted", "event"):
+        return "targeted"
+    return r or "deep"
+
+
+def normalize_ticker(ticker: str | None, exchange: str | None) -> str | None:
+    """Normalize classify ticker to TICKER.EXCHANGE form for lookups."""
+    if not ticker:
+        return None
+    t = ticker.strip().upper()
+    if "." in t:
+        return t
+    ex = (exchange or "").upper()
+    if ex in ("HK", "HKEX"):
+        return f"{t}.HK"
+    if ex in ("US", "NYSE", "NASDAQ"):
+        return f"{t}.US"
+    if ex in ("SHG", "SHANGHAI"):
+        return f"{t}.SHG"
+    if ex in ("SHE", "SHENZHEN"):
+        return f"{t}.SHE"
+    return t
+
+
+def should_precompute_peer_regression(plan: DispatchPlan) -> bool:
+    if not plan.ticker:
+        return False
+    region = normalize_region(plan.region, plan.exchange)
+    rigor = normalize_rigor(plan.rigor)
+    task_type = (plan.task_type or "").lower()
+    deep_rigor = rigor == "deep" or task_type in ("initiation", "initiate_coverage")
+    return region in ("HK", "CN", "DUAL", "US") and deep_rigor
 
 
 def infer_task_type(task: str) -> str:
@@ -707,11 +824,23 @@ def summarize_context(text: str, limit: int = 2000) -> str:
 def build_classify_instructions(
     prompts: dict[str, str],
     coverage_context: str,
+    ticker: str | None,
+    python_is_covered: bool,
+    covered_tickers: list[str],
 ) -> str:
+    watchlist = ", ".join(covered_tickers) if covered_tickers else "(empty)"
+    coverage_status = (
+        "\n\n## Coverage Status (resolved by runtime — do not override)\n"
+        f"Detected ticker: {ticker or 'none detected'}\n"
+        f"is_covered: {python_is_covered}\n"
+        f"Full active watchlist: {watchlist}\n\n"
+        "Do not re-determine is_covered. Use the value above."
+    )
     return (
         prompts["lab_md"][:2000]
         + "\n\n---\n\n# Active context (coverage.md)\n\n"
         + prompts["coverage_md"]
+        + coverage_status
         + (f"\n\n{coverage_context}" if coverage_context else "")
     )
 
@@ -722,6 +851,98 @@ def build_synthesize_instructions(prompts: dict[str, str]) -> str:
     if not director_synthesis:
         director_synthesis = prompts["director"]
     return director_synthesis + "\n\n---\n\n" + quality_gates
+
+
+def _log_analyst_tools(
+    analyst_role: str,
+    instructions: str,
+    config: LabConfig,
+    mcp_server: Any | None,
+) -> list[str]:
+    """Log function-tool names attached to a regional analyst before Runner.run()."""
+    agent = build_step_agent(analyst_role, instructions, config, mcp_server)
+    names = [getattr(t, "name", type(t).__name__) for t in (agent.tools or [])]
+    _log_step("analyst_tools", role=analyst_role, tools=names)
+    return names
+
+
+def _apply_classify_coverage_override(
+    plan: DispatchPlan,
+    python_is_covered: bool,
+) -> DispatchPlan:
+    if plan.is_covered != python_is_covered:
+        _log_step(
+            "classify_override",
+            llm_said=plan.is_covered,
+            python_resolved=python_is_covered,
+            ticker=plan.ticker,
+        )
+        plan.is_covered = python_is_covered
+    if plan.is_covered and "coverage_agent" not in plan.agents_needed:
+        plan.agents_needed = ["coverage_agent", *plan.agents_needed]
+    return plan
+
+
+def _apply_classify_agents_override(plan: DispatchPlan) -> DispatchPlan:
+    """Enforce agents_needed rules when classify JSON omits required roles."""
+    needed = list(plan.agents_needed)
+    region = normalize_region(plan.region, plan.exchange)
+    rigor = normalize_rigor(plan.rigor)
+    task_type = (plan.task_type or "").lower()
+
+    def ensure(role: str) -> None:
+        if role not in needed:
+            needed.append(role)
+
+    if plan.is_covered:
+        ensure("coverage_agent")
+    ensure("macro_specialist")
+
+    if region == "DUAL":
+        ensure("hk_analyst")
+        ensure("china_ah_analyst")
+    elif region == "HK":
+        ensure("hk_analyst")
+    elif region == "US":
+        ensure("us_analyst")
+    elif region == "CN":
+        ensure("china_ah_analyst")
+
+    if task_type in ("initiation", "initiate_coverage") and rigor == "deep":
+        for role in SPECIALIST_ORDER:
+            ensure(role)
+    elif rigor in ("surface", "targeted") or task_type in ("refresh", "surface"):
+        needed = [r for r in needed if r != "sector_specialist"]
+
+    if plan.is_covered and "coverage_agent" in needed:
+        needed = ["coverage_agent"] + [r for r in needed if r != "coverage_agent"]
+
+    plan.agents_needed = needed
+    return plan
+
+
+def _build_peer_regression_context(result: Any) -> str:
+    return (
+        "## Phase 1 Pre-Computed Peer Regression\n"
+        "The following FactorRegime input has been pre-computed. "
+        "Use this as your Phase 1 regression output — do not re-run it. "
+        "Proceed directly to Phase 1 synthesis (broker consensus + macro signal "
+        "integration) then Phase 2 stock analysis.\n\n"
+        f"{json.dumps(asdict(result), indent=2)}"
+    )
+
+
+def _build_peer_regression_tool_instruction(ticker: str | None) -> str:
+    peers = DEFAULT_PEERS.get((ticker or "").upper(), [])
+    return (
+        "## Phase 1 Instruction — REQUIRED FIRST ACTION\n"
+        "Before any analysis, call peer_regression_tool with:\n"
+        f"  target_ticker: '{ticker}'\n"
+        f"  peer_tickers: {peers}\n"
+        "  lookback_months: 12\n"
+        "Wait for the result. Use it as your Phase 1 regression input. "
+        "Do not proceed to Phase 1 synthesis until this tool call returns.\n\n"
+    )
 
 
 def _count_turns(result: Any) -> int:
@@ -772,6 +993,8 @@ async def run_pipeline(
     report = boot(config, prompts)
 
     ticker = detect_ticker(task)
+    covered_tickers = get_covered_tickers(prompts["coverage_md"])
+    python_is_covered = is_ticker_covered(ticker or "", prompts["coverage_md"])
     coverage_context = ""
     if ticker:
         state = load_coverage_state(ticker)
@@ -780,6 +1003,8 @@ async def run_pipeline(
     steps: dict[str, Any] = {}
     specialist_outputs: dict[str, str] = {}
     pipeline_status = "completed"
+    peer_regression_result: Any | None = None
+    use_peer_tool_prompt = False
 
     max_tokens = resolve_max_output_tokens()
     run_config = RunConfig(
@@ -797,11 +1022,26 @@ async def run_pipeline(
             "agents_needed must be a list drawn from: "
             "[coverage_agent, macro_specialist, us_analyst, hk_analyst, "
             "china_ah_analyst, sector_specialist, valuation_specialist, risk_specialist].\n\n"
+            "is_covered: USE THE VALUE PROVIDED IN SYSTEM CONTEXT. "
+            "Do not infer from task text. The runtime has already resolved "
+            "this from coverage.md.\n\n"
+            "agents_needed selection rules:\n"
+            "- If is_covered=True: always include coverage_agent first\n"
+            "- If region=HK, CN, or DUAL: always include macro_specialist\n"
+            "- If task_type=initiation and rigor=deep: include all specialists "
+            "(sector_specialist, valuation_specialist, risk_specialist)\n"
+            "- If task_type=surface or rigor=surface/targeted: omit sector_specialist\n\n"
             "Do not perform analysis. Do not produce a memo. Return JSON only — no prose."
         )
         classify_out, classify_turns, classify_status = await _run_agent_step(
             "director",
-            build_classify_instructions(prompts, coverage_context),
+            build_classify_instructions(
+                prompts,
+                coverage_context,
+                ticker,
+                python_is_covered,
+                covered_tickers,
+            ),
             classify_msg,
             config,
             run_config,
@@ -829,6 +1069,11 @@ async def run_pipeline(
         if not plan.ticker:
             plan = default_dispatch_plan(task, prompts["coverage_md"])
             _log_step("classify", status="fallback", reason="empty ticker in plan")
+        plan = _apply_classify_coverage_override(plan, python_is_covered)
+        plan = _apply_classify_agents_override(plan)
+        plan.region = normalize_region(plan.region, plan.exchange)
+        if plan.ticker:
+            plan.ticker = normalize_ticker(plan.ticker, plan.exchange) or plan.ticker
 
         # Step 2 — Coverage Agent
         if plan.is_covered and "coverage_agent" in plan.agents_needed:
@@ -893,16 +1138,68 @@ async def run_pipeline(
         if macro_status != "ok":
             pipeline_status = "partial"
 
-        # Step 4 — Regional analyst(s), sequential
+        # Step 4 prep — tool visibility (determines Step 3.5 vs prompt hardening)
         analyst_parts: list[str] = []
         regional_roles = REGIONAL_ROLES.get(plan.region, "hk_analyst")
         if isinstance(regional_roles, str):
             regional_roles = [regional_roles]
 
-        for analyst_role in regional_roles:
-            if analyst_role not in plan.agents_needed:
-                continue
+        active_analyst_roles = [
+            role for role in regional_roles if role in plan.agents_needed
+        ]
+        peer_tool_visible = False
+        if active_analyst_roles:
+            probe_role = active_analyst_roles[0]
+            probe_tools = _log_analyst_tools(
+                probe_role,
+                prompts[probe_role],
+                config,
+                eodhd,
+            )
+            peer_tool_visible = "peer_regression_tool" in probe_tools
+
+        # Step 3.5 — Peer regression (programmatic; reliable even when model skips tool)
+        if should_precompute_peer_regression(plan):
+            peer_list = DEFAULT_PEERS.get((plan.ticker or "").upper())
+            if peer_list:
+                peer_regression_result = run_peer_regression(
+                    target_ticker=plan.ticker or "",
+                    peer_tickers=peer_list,
+                    lookback_months=12,
+                )
+                steps["peer_regression"] = asdict(peer_regression_result)
+                _log_step(
+                    "peer_regression",
+                    ticker=plan.ticker,
+                    n_peers=peer_regression_result.n_peers,
+                    confidence=peer_regression_result.confidence,
+                    data_gaps=peer_regression_result.data_gaps,
+                )
+            else:
+                _log_step(
+                    "peer_regression",
+                    skipped=True,
+                    reason="no default peers",
+                    ticker=plan.ticker,
+                )
+
+        # Step 4 — Regional analyst(s), sequential
+        for analyst_role in active_analyst_roles:
+            if analyst_role != active_analyst_roles[0]:
+                _log_analyst_tools(
+                    analyst_role,
+                    prompts[analyst_role],
+                    config,
+                    eodhd,
+                )
+            analyst_prefix = ""
+            if peer_regression_result is not None:
+                analyst_prefix = _build_peer_regression_context(peer_regression_result) + "\n\n"
+            elif peer_tool_visible:
+                use_peer_tool_prompt = True
+                analyst_prefix = _build_peer_regression_tool_instruction(plan.ticker)
             analyst_msg = (
+                f"{analyst_prefix}"
                 f"Task: {plan.task_type} on {plan.ticker}\n"
                 f"Rigor: {plan.rigor}\n"
                 f"MacroRegimeTag: {summarize_context(macro_tag, 1500)}\n"

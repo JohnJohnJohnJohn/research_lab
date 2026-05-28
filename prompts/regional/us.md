@@ -51,11 +51,13 @@ Mandatory. Cannot be skipped. Produces a **FactorRegime** object before any Phas
 
 ### 3b. Peer regression execution
 
-- Pull trailing **12-month returns** for each comp via `get_price_history` (daily series; compute return from adjusted close).
+**Step 1a — Peer Regression (REQUIRED)**
+Call `peer_regression_tool` with the target ticker and a peer list of 8–15 comparable names. If the tool result is provided in your input context (pre-computed), use that directly and proceed to Step 1b. Do not rerun if already provided.
+
+- Pull trailing **12-month returns** for each comp via `get_price_history` (daily series; compute return from adjusted close) when building supplemental peer context.
 - Pull candidate fundamentals for each comp via `get_fundamentals` (margins, growth, leverage, valuation multiples, etc.).
 - Use the **standard market data capability** (tier 2 per `lab.md` §2) in v0.1. Prefer premium institutional data (tier 1) when available; stamp tier used in output.
 - If standard market data returns `{error: true}`: retry once; escalate if still failing per Director failure modes. Do not invent data.
-- Run peer regression using the `peer_regression` skill when available; otherwise compute cross-sectional correlation of trailing 12M returns against candidate fundamentals.
 - Surface **top 2–3 explanatory factors** with directional sign (+/−).
 - State explicitly: this is **correlation discovery, not causal proof**. Do not claim causality.
 

@@ -51,11 +51,13 @@ Mandatory. Cannot be skipped.
 
 ### 3b. Peer regression execution
 
-- Pull trailing **12-month returns** via `get_price_history` with `exchange="HK"`.
+**Step 1a — Peer Regression (REQUIRED)**
+Call `peer_regression_tool` with the target ticker and a peer list of 8–15 comparable names. If the tool result is provided in your input context (pre-computed), use that directly and proceed to Step 1b. Do not rerun if already provided.
+
+- Pull trailing **12-month returns** via `get_price_history` with `exchange="HK"` when building supplemental peer context.
 - Pull fundamentals via `get_fundamentals` with `exchange="HK"`.
 - Use the **standard market data capability** (tier 2 per `lab.md` §2) for prices and fundamentals in v0.1. If premium institutional data (tier 1) is available, prefer it and stamp the tier used.
 - If standard market data returns `{error: true}`: retry once; if still failing, escalate with `suggested_fallback` from the tool response. Do not invent prices or fundamentals.
-- Use `peer_regression` skill when available; otherwise compute cross-sectional correlation.
 - Surface **top 2–3 explanatory factors** with directional sign.
 - State explicitly: **correlation discovery, not causal proof**.
 
