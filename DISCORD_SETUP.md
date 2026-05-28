@@ -8,23 +8,37 @@ The Research Lab exposes a single Discord bot (`@ResearchDirector`) as the human
 2. **New Application** → name it **Research Director**
 3. Open the **Bot** tab → **Add Bot** → copy **Bot Token** → `DISCORD_BOT_TOKEN` in `.env`
 
-## 2. Set Bot Permissions
+## 2. Set Bot Permissions and Invite URL
 
-Required permissions when generating the invite URL:
+1. Developer Portal → **OAuth2** → **URL Generator**
+2. Scopes — select **both** (required for slash commands):
+   - `bot`
+   - `applications.commands`
+3. Bot Permissions:
+   - Send Messages
+   - Create Public Threads
+   - Send Messages in Threads
+   - Read Message History
+   - Use Slash Commands
+4. Copy the generated URL, open it in a browser, and add the bot to your **private server**
 
-- Send Messages
-- Create Public Threads
-- Send Messages in Threads
-- Read Message History
-- Use Slash Commands
+If you only used the `bot` scope (no `applications.commands`), slash command sync fails with **403 Missing Access (50001)**.
 
-Generate an OAuth2 invite URL (Bot scope + permissions above) and add the bot to your **private server**.
+Manual invite URL shape:
+
+```text
+https://discord.com/api/oauth2/authorize?client_id=YOUR_APP_ID&permissions=...&scope=bot%20applications.commands
+```
+
+Replace `YOUR_APP_ID` with Application ID from **General Information**.
 
 ## 3. Get IDs (Developer Mode required)
 
 1. Enable **Developer Mode**: User Settings → Advanced → Developer Mode
-2. Right-click your server → **Copy Server ID** → `DISCORD_GUILD_ID`
+2. Right-click your **server name** (not a channel) → **Copy Server ID** → `DISCORD_GUILD_ID`
 3. Right-click `#research-lab` channel → **Copy Channel ID** → `DISCORD_CHANNEL_ID`
+
+**Common mistake:** using the channel ID for `DISCORD_GUILD_ID`. The guild ID is the server; the channel ID is different.
 
 ## 4. Configure `.env`
 

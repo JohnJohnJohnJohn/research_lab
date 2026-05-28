@@ -21,6 +21,8 @@ import json
 import os
 import re
 import sys
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from pathlib import Path
@@ -371,6 +373,16 @@ def configure_provider_environment(config: LabConfig) -> str:
         os.environ.setdefault("DASHSCOPE_API_BASE", config.dashscope_api_base)
     if config.openrouter_api_key:
         os.environ.setdefault("OPENROUTER_API_KEY", config.openrouter_api_key)
+
+    # Agents SDK tracing posts to OpenAI's trace API; silence when not using OpenAI.
+    if not config.openai_api_key:
+        os.environ.setdefault("OPENAI_AGENTS_DISABLE_TRACING", "true")
+        try:
+            from agents import set_tracing_disabled
+
+            set_tracing_disabled(True)
+        except ImportError:
+            pass
 
     # SPEC §6: OpenAI Agents SDK + LiteLLM adapter for multi-provider models.
     os.environ.setdefault("LITELLM_LOG", "ERROR")
@@ -724,6 +736,59 @@ def should_precompute_peer_regression(plan: DispatchPlan) -> bool:
     return region in ("HK", "CN", "DUAL", "US") and deep_rigor
 
 
+PIPELINE_STEP_LABELS: dict[str, str] = {
+    "classify": "Director — classify",
+    "coverage_agent": "Coverage Agent",
+    "macro": "Macro Analyst",
+    "peer_regression": "Peer regression",
+    "us_analyst": "US Analyst",
+    "hk_analyst": "HK Analyst",
+    "china_ah_analyst": "China A/H Analyst",
+    "sector_specialist": "Sector Expert",
+    "valuation_specialist": "Valuation",
+    "risk_specialist": "Risk & Scenarios",
+    "memo": "Director — synthesize memo",
+}
+
+
+def build_pipeline_step_queue(plan: DispatchPlan) -> list[str]:
+    """Ordered pipeline steps for progress display."""
+    steps = ["classify"]
+    if plan.is_covered and "coverage_agent" in plan.agents_needed:
+        steps.append("coverage_agent")
+    steps.append("macro")
+    if should_precompute_peer_regression(plan):
+        steps.append("peer_regression")
+    regional_roles = REGIONAL_ROLES.get(plan.region, "hk_analyst")
+    if isinstance(regional_roles, str):
+        regional_roles = [regional_roles]
+    for role in regional_roles:
+        if role in plan.agents_needed:
+            steps.append(role)
+    for spec_role in SPECIALIST_ORDER:
+        if spec_role in plan.agents_needed:
+            steps.append(spec_role)
+    steps.append("memo")
+    return steps
+
+
+ProgressFn = Callable[[str, str, dict[str, Any]], Awaitable[None]]
+
+
+async def _pipeline_progress(
+    on_progress: ProgressFn | None,
+    step: str,
+    event: str,
+    **meta: Any,
+) -> None:
+    if on_progress is None:
+        return
+    try:
+        await on_progress(step, event, meta)
+    except Exception:
+        pass
+
+
 def infer_task_type(task: str) -> str:
     lower = task.lower()
     if "initiat" in lower:
@@ -1002,6 +1067,7 @@ async def run_pipeline(
     task: str,
     config: LabConfig,
     prompts: dict[str, str],
+    on_progress: ProgressFn | None = None,
 ) -> dict[str, Any]:
     """Programmatic multi-agent research pipeline (Path A)."""
     from agents.extensions.models.litellm_provider import LitellmProvider
@@ -1034,6 +1100,7 @@ async def run_pipeline(
     eodhd = build_eodhd_stdio_server(config)
     async with eodhd:
         # Step 1 — Director classify
+        await _pipeline_progress(on_progress, "classify", "start")
         classify_msg = (
             f"Task: {task}\n\n"
             "Return a JSON object with exactly these fields: "
@@ -1075,6 +1142,13 @@ async def run_pipeline(
             status=classify_status,
         )
         if classify_status != "ok":
+            await _pipeline_progress(
+                on_progress,
+                "classify",
+                "done",
+                status=classify_status,
+                turns=classify_turns,
+            )
             return {
                 "status": "failed",
                 "task": task,
@@ -1094,8 +1168,27 @@ async def run_pipeline(
         if plan.ticker:
             plan.ticker = normalize_ticker(plan.ticker, plan.exchange) or plan.ticker
 
+        await _pipeline_progress(
+            on_progress,
+            "pipeline",
+            "queue",
+            steps=build_pipeline_step_queue(plan),
+        )
+        await _pipeline_progress(
+            on_progress,
+            "classify",
+            "done",
+            status=classify_status,
+            turns=classify_turns,
+            ticker=plan.ticker,
+            region=plan.region,
+            rigor=plan.rigor,
+            task_type=plan.task_type,
+        )
+
         # Step 2 — Coverage Agent
         if plan.is_covered and "coverage_agent" in plan.agents_needed:
+            await _pipeline_progress(on_progress, "coverage_agent", "start")
             coverage_msg = (
                 f"Ticker: {plan.ticker}\n"
                 f"Trigger: {plan.task_type}\n"
@@ -1123,6 +1216,13 @@ async def run_pipeline(
             )
             if ctx_status != "ok":
                 pipeline_status = "partial"
+            await _pipeline_progress(
+                on_progress,
+                "coverage_agent",
+                "done",
+                status=ctx_status,
+                turns=ctx_turns,
+            )
         else:
             context_package = "No prior coverage — first touch."
             steps["coverage_agent"] = context_package
@@ -1133,6 +1233,7 @@ async def run_pipeline(
             )
 
         # Step 3 — Macro
+        await _pipeline_progress(on_progress, "macro", "start")
         sector = extract_sector_from_coverage(plan.ticker, prompts["coverage_md"])
         macro_msg = (
             f"Region: {plan.region}\n"
@@ -1156,6 +1257,13 @@ async def run_pipeline(
         _log_step("macro", turns=macro_turns, output_chars=len(macro_out), status=macro_status)
         if macro_status != "ok":
             pipeline_status = "partial"
+        await _pipeline_progress(
+            on_progress,
+            "macro",
+            "done",
+            status=macro_status,
+            turns=macro_turns,
+        )
 
         # Step 4 prep — tool visibility (determines Step 3.5 vs prompt hardening)
         analyst_parts: list[str] = []
@@ -1179,6 +1287,7 @@ async def run_pipeline(
 
         # Step 3.5 — Peer regression (programmatic; reliable even when model skips tool)
         if should_precompute_peer_regression(plan):
+            await _pipeline_progress(on_progress, "peer_regression", "start")
             peer_list = DEFAULT_PEERS.get((plan.ticker or "").upper())
             if peer_list:
                 peer_regression_result = run_peer_regression(
@@ -1194,6 +1303,14 @@ async def run_pipeline(
                     confidence=peer_regression_result.confidence,
                     data_gaps=peer_regression_result.data_gaps,
                 )
+                await _pipeline_progress(
+                    on_progress,
+                    "peer_regression",
+                    "done",
+                    status="ok",
+                    n_peers=peer_regression_result.n_peers,
+                    confidence=peer_regression_result.confidence,
+                )
             else:
                 _log_step(
                     "peer_regression",
@@ -1201,9 +1318,17 @@ async def run_pipeline(
                     reason="no default peers",
                     ticker=plan.ticker,
                 )
+                await _pipeline_progress(
+                    on_progress,
+                    "peer_regression",
+                    "done",
+                    skipped=True,
+                    reason="no default peers",
+                )
 
         # Step 4 — Regional analyst(s), sequential
         for analyst_role in active_analyst_roles:
+            await _pipeline_progress(on_progress, analyst_role, "start")
             if analyst_role != active_analyst_roles[0]:
                 _log_analyst_tools(
                     analyst_role,
@@ -1246,6 +1371,13 @@ async def run_pipeline(
             )
             if status != "ok":
                 pipeline_status = "partial"
+            await _pipeline_progress(
+                on_progress,
+                analyst_role,
+                "done",
+                status=status,
+                turns=turns,
+            )
 
         analyst_output = "\n\n".join(analyst_parts) if analyst_parts else "[no analyst output]"
         steps["analyst"] = analyst_output
@@ -1255,6 +1387,7 @@ async def run_pipeline(
         for spec_role in SPECIALIST_ORDER:
             if spec_role not in plan.agents_needed:
                 continue
+            await _pipeline_progress(on_progress, spec_role, "start")
             if spec_role == "sector_specialist":
                 spec_msg = (
                     f"Ticker: {plan.ticker}\n"
@@ -1300,10 +1433,18 @@ async def run_pipeline(
             )
             if status != "ok":
                 pipeline_status = "partial"
+            await _pipeline_progress(
+                on_progress,
+                spec_role,
+                "done",
+                status=status,
+                turns=turns,
+            )
 
         steps["specialists"] = specialist_outputs
 
         # Step 6 — Director synthesize
+        await _pipeline_progress(on_progress, "memo", "start")
         spec_block = "\n".join(
             f"--- {role} ---\n{body}" for role, body in specialist_outputs.items()
         )
@@ -1332,6 +1473,13 @@ async def run_pipeline(
         _log_step("memo", turns=memo_turns, output_chars=len(memo_out), status=memo_status)
         if memo_status != "ok":
             pipeline_status = "partial"
+        await _pipeline_progress(
+            on_progress,
+            "memo",
+            "done",
+            status=memo_status,
+            turns=memo_turns,
+        )
 
     return {
         "status": pipeline_status,
@@ -1478,6 +1626,456 @@ def _extract_memo_fields(memo_text: str, result: dict[str, Any]) -> dict[str, st
     }
 
 
+def _effective_text_channel(channel: Any) -> Any | None:
+    """Map an interaction/message channel to the TextChannel used for posting."""
+    import discord
+
+    if isinstance(channel, discord.Thread):
+        parent = channel.parent
+        if isinstance(parent, discord.TextChannel):
+            return parent
+        return None
+    if isinstance(channel, discord.TextChannel):
+        return channel
+    return None
+
+
+def _app_can_post_via_interaction(perms: Any) -> bool:
+    """Whether Discord allows interaction follow-up messages in this channel."""
+    if perms.administrator:
+        return True
+    return bool(perms.send_messages)
+
+
+def _member_can_post(perms: Any) -> bool:
+    """Permissions required for channel.send() (REST API — not app_permissions)."""
+    if perms.administrator:
+        return True
+    return bool(perms.view_channel and perms.send_messages)
+
+
+def _perms_can_create_threads(perms: Any) -> bool:
+    return bool(
+        perms.administrator
+        or perms.manage_threads
+        or perms.create_public_threads
+    )
+
+
+def _format_discord_perm_flags(perms: Any) -> str:
+    labels = (
+        ("view_channel", "View Channel"),
+        ("send_messages", "Send Messages"),
+        ("create_public_threads", "Create Public Threads"),
+        ("send_messages_in_threads", "Send Messages in Threads"),
+        ("administrator", "Administrator"),
+    )
+    lines: list[str] = []
+    for attr, label in labels:
+        ok = bool(getattr(perms, attr, False))
+        lines.append(f"{'✅' if ok else '❌'} {label}")
+    return "\n".join(lines)
+
+
+async def _ensure_bot_member(guild: Any, client: Any) -> Any | None:
+    me = guild.me
+    if me is not None:
+        return me
+    try:
+        return await guild.fetch_member(client.user.id)
+    except Exception:
+        return None
+
+
+async def _channel_permissions_for_bot(
+    channel: Any, client: Any, precomputed: Any | None = None
+) -> Any | None:
+    import discord
+
+    if not isinstance(channel, discord.TextChannel):
+        return None
+    if precomputed is not None:
+        return precomputed
+    me = await _ensure_bot_member(channel.guild, client)
+    if me is None:
+        return None
+    return channel.permissions_for(me)
+
+
+def _missing_access_setup_hint() -> str:
+    return (
+        "**403 Missing Access (50001)** — the bot cannot see or post in this channel.\n\n"
+        "Fix in Discord:\n"
+        "1. **Category** — Right-click the category for #research-lab → "
+        "Edit Category → Permissions → add your **bot role** → enable **View Channel**.\n"
+        "2. **Channel** — Right-click #research-lab → Edit Channel → Permissions → "
+        "bot role → enable **View Channel**, **Send Messages**, "
+        "**Create Public Threads**, **Send Messages in Threads**.\n"
+        "3. **Role order** — Server Settings → Roles → drag the bot role **above** "
+        "roles that deny access.\n"
+        "4. Restart: `python lab.py --discord`\n\n"
+        "Private channels need the bot allowed on the **category or channel** — "
+        "server-wide role permissions alone are not enough."
+    )
+
+
+async def _resolve_slash_channel(
+    client: Any,
+    guild_id: int,
+    configured_channel_id: int,
+    interaction: Any,
+) -> Any | None:
+    """Channel target for slash commands (interaction webhook or member perms)."""
+    eff = _effective_text_channel(interaction.channel)
+    if eff is None:
+        return None
+    app_perms = getattr(interaction, "app_permissions", None)
+    if app_perms is not None and _app_can_post_via_interaction(app_perms):
+        return eff
+    member_perms = await _channel_permissions_for_bot(eff, client)
+    if member_perms is not None and _member_can_post(member_perms):
+        return eff
+    return await _resolve_text_channel(
+        client, guild_id, configured_channel_id, interaction=interaction
+    )
+
+
+async def _discord_post(
+    content: str,
+    *,
+    interaction: Any | None = None,
+    channel: Any | None = None,
+    thread: Any | None = None,
+    wait: bool = True,
+) -> Any:
+    """Post a message via interaction follow-up or channel/thread send."""
+    text = content[:1990]
+    if interaction is not None:
+        return await interaction.followup.send(text, wait=wait, ephemeral=False)
+    if thread is not None:
+        return await thread.send(text)
+    if channel is not None:
+        return await channel.send(text)
+    raise ValueError("No Discord post target")
+
+
+async def _discord_edit(message: Any, content: str) -> None:
+    await message.edit(content=content[:1990])
+
+
+async def _create_memo_thread(
+    channel: Any,
+    parent_msg: Any,
+    thread_name: str,
+    *,
+    use_interaction: bool,
+) -> Any | None:
+    """Create a public thread from the memo header message."""
+    import discord
+
+    try:
+        if use_interaction and isinstance(channel, discord.TextChannel):
+            return await channel.create_thread(
+                name=thread_name[:100],
+                message=parent_msg,
+                auto_archive_duration=10080,
+            )
+        return await parent_msg.create_thread(
+            name=thread_name[:100],
+            auto_archive_duration=10080,
+        )
+    except (discord.Forbidden, discord.HTTPException, ValueError):
+        return None
+
+
+async def _resolve_text_channel(
+    client: Any,
+    guild_id: int,
+    configured_channel_id: int,
+    interaction: Any | None = None,
+) -> Any | None:
+    """Resolve a TextChannel the bot can post to via the REST API."""
+    import discord
+
+    candidates: list[Any] = []
+    if interaction is not None and interaction.channel is not None:
+        eff = _effective_text_channel(interaction.channel)
+        if eff is not None:
+            candidates.append(eff)
+
+    guild = client.get_guild(guild_id)
+    if guild is not None:
+        candidates.append(guild.get_channel(configured_channel_id))
+    candidates.append(client.get_channel(configured_channel_id))
+
+    seen: set[int] = set()
+    for ch in candidates:
+        if ch is None or not isinstance(ch, discord.TextChannel):
+            continue
+        if ch.id in seen:
+            continue
+        seen.add(ch.id)
+        perms = await _channel_permissions_for_bot(ch, client)
+        if perms is not None and _member_can_post(perms):
+            return ch
+
+    try:
+        fetched = await client.fetch_channel(configured_channel_id)
+    except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+        fetched = None
+    if fetched is not None and isinstance(fetched, discord.TextChannel):
+        perms = await _channel_permissions_for_bot(fetched, client)
+        if perms is not None and _member_can_post(perms):
+            return fetched
+    return None
+
+
+async def _channel_permission_report(
+    client: Any,
+    guild_id: int,
+    configured_channel_id: int,
+    interaction: Any | None = None,
+    *,
+    error_context: bool = False,
+) -> str:
+    """Live permission flags for Discord channel setup."""
+    import discord
+
+    can_send = False
+    via_interaction = False
+    member_perms = None
+    app_perms = None
+    eff = None
+    if interaction is not None and interaction.channel is not None:
+        eff = _effective_text_channel(interaction.channel)
+        app_perms = getattr(interaction, "app_permissions", None)
+        if app_perms is not None and _app_can_post_via_interaction(app_perms):
+            can_send = True
+            via_interaction = True
+        if eff is not None:
+            member_perms = await _channel_permissions_for_bot(eff, client)
+            if member_perms is not None and _member_can_post(member_perms):
+                can_send = True
+    if not can_send:
+        ch = await _resolve_text_channel(
+            client, guild_id, configured_channel_id, interaction=interaction
+        )
+        can_send = ch is not None
+
+    if error_context:
+        lines = [
+            f"Bot cannot post in channel `{configured_channel_id}` "
+            "(DISCORD_CHANNEL_ID).",
+            "",
+        ]
+    else:
+        if not can_send:
+            status = "❌ Bot cannot send."
+        elif via_interaction and member_perms is not None and not _member_can_post(
+            member_perms
+        ):
+            status = (
+                "✅ Bot can respond to slash commands (interaction webhook). "
+                "Grant **View Channel** for thread replies."
+            )
+        else:
+            status = "✅ Bot can send here."
+        lines = [
+            status,
+            f"Configured channel: `{configured_channel_id}` (DISCORD_CHANNEL_ID).",
+            "",
+        ]
+
+    if interaction is not None and interaction.channel is not None:
+        invoked_id = interaction.channel.id
+        eff = _effective_text_channel(interaction.channel)
+        lines.append(
+            f"Command invoked in channel `{invoked_id}`"
+            + (f" (post target `{eff.id}`)" if eff is not None else "")
+            + "."
+        )
+        if eff is not None and eff.id != configured_channel_id:
+            lines.append(
+                "⚠️ Channel ID mismatch — update DISCORD_CHANNEL_ID in `.env` "
+                "to match #research-lab, or run `/research` from that channel."
+            )
+        app_perms = getattr(interaction, "app_permissions", None)
+        if app_perms is not None:
+            lines.extend(
+                [
+                    "",
+                    "Discord app permissions (used for slash-command responses):",
+                    _format_discord_perm_flags(app_perms),
+                ]
+            )
+            if app_perms.send_messages and member_perms is not None and not _member_can_post(
+                member_perms
+            ):
+                lines.append(
+                    "ℹ️ Slash commands can post via interaction webhook without "
+                    "**View Channel** on the bot role. Thread replies still need it."
+                )
+        if eff is not None and member_perms is not None:
+            lines.extend(
+                [
+                    "",
+                    f"Member permissions in `{eff.id}` (required for posting):",
+                    _format_discord_perm_flags(member_perms),
+                ]
+            )
+        elif eff is not None:
+            member_perms = await _channel_permissions_for_bot(eff, client)
+            if member_perms is not None:
+                lines.extend(
+                    [
+                        "",
+                        f"Member permissions in `{eff.id}` (required for posting):",
+                        _format_discord_perm_flags(member_perms),
+                    ]
+                )
+
+    guild = client.get_guild(guild_id)
+    configured = None
+    if guild is not None:
+        configured = guild.get_channel(configured_channel_id)
+    if configured is None:
+        configured = client.get_channel(configured_channel_id)
+    if configured is None:
+        try:
+            configured = await client.fetch_channel(configured_channel_id)
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            configured = None
+
+    if isinstance(configured, discord.TextChannel):
+        cfg_perms = await _channel_permissions_for_bot(configured, client)
+        if cfg_perms is not None:
+            lines.extend(
+                [
+                    "",
+                    f"Member role permissions in configured channel `{configured.id}`:",
+                    _format_discord_perm_flags(cfg_perms),
+                ]
+            )
+    elif configured is None:
+        lines.extend(
+            [
+                "",
+                "Configured channel is not visible to the bot (wrong ID, private "
+                "channel, or missing **View Channel** on the channel/category).",
+            ]
+        )
+
+    if not can_send:
+        lines.extend(
+            [
+                "",
+                _missing_access_setup_hint(),
+            ]
+        )
+    return "\n".join(lines)
+
+
+async def _channel_access_hint(
+    client: Any,
+    guild_id: int,
+    configured_channel_id: int,
+    interaction: Any | None = None,
+) -> str:
+    return await _channel_permission_report(
+        client,
+        guild_id,
+        configured_channel_id,
+        interaction=interaction,
+        error_context=True,
+    )
+
+
+def _channel_permission_hint(channel_id: int) -> str:
+    return (
+        f"Bot cannot post in channel {channel_id}.\n\n"
+        f"{_missing_access_setup_hint()}"
+    )
+
+
+class DiscordProgressBoard:
+    """Live pipeline status rendered by editing a single Discord message."""
+
+    def __init__(self, ack: Any, task_display: str) -> None:
+        self.ack = ack
+        self.task = task_display
+        self.started = time.monotonic()
+        self.queue: list[str] = []
+        self.completed: dict[str, str] = {}
+        self.active: str | None = None
+
+    def _label(self, step: str) -> str:
+        return PIPELINE_STEP_LABELS.get(step, step.replace("_", " ").title())
+
+    def set_queue(self, steps: list[str]) -> None:
+        self.queue = steps
+
+    async def mark_start(self, step: str) -> None:
+        self.active = step
+        await self.render()
+
+    async def mark_done(self, step: str, **meta: Any) -> None:
+        if meta.get("skipped"):
+            icon = "⏭️"
+        elif meta.get("status") == "ok":
+            icon = "✅"
+        else:
+            icon = "⚠️"
+        detail = self._format_detail(step, meta)
+        self.completed[step] = f"{icon} {self._label(step)}{detail}"
+        if self.active == step:
+            self.active = None
+        await self.render()
+
+    def _format_detail(self, step: str, meta: dict[str, Any]) -> str:
+        if step == "classify" and meta.get("ticker"):
+            parts = [str(meta["ticker"])]
+            if meta.get("region"):
+                parts.append(str(meta["region"]))
+            summary = " · ".join(parts)
+            if meta.get("rigor"):
+                summary += f" · {meta['rigor']}"
+            return f" — {summary}"
+        if step == "peer_regression":
+            if meta.get("skipped"):
+                return f" — skipped ({meta.get('reason', 'n/a')})"
+            return (
+                f" — {meta.get('n_peers', 0)} peers · "
+                f"{meta.get('confidence', '?')} confidence"
+            )
+        if meta.get("skipped"):
+            return f" — skipped ({meta.get('reason', 'n/a')})"
+        if meta.get("turns"):
+            return f" — {meta['turns']} turns"
+        if meta.get("status") and meta.get("status") != "ok":
+            return f" — {meta['status']}"
+        return ""
+
+    async def render(self) -> None:
+        elapsed = int(time.monotonic() - self.started)
+        mins, secs = divmod(elapsed, 60)
+        lines = [
+            f"🔬 **Research:** `{self.task}`",
+            "─" * 30,
+        ]
+        if self.queue:
+            for step in self.queue:
+                if step in self.completed:
+                    lines.append(self.completed[step])
+                elif step == self.active:
+                    lines.append(f"⏳ {self._label(step)} — running…")
+                else:
+                    lines.append(f"⬜ {self._label(step)}")
+        elif self.active:
+            lines.append(f"⏳ {self._label(self.active)} — running…")
+        lines.append(f"\n⏱️ Elapsed: {mins}m {secs}s · typical run ~5–10 min")
+        await _discord_edit(self.ack, "\n".join(lines))
+
+
 async def handle_discord_message(
     task: str,
     channel: Any,
@@ -1485,24 +2083,46 @@ async def handle_discord_message(
     feedback_context: str | None,
     config: LabConfig,
     prompts: dict[str, str],
+    client: Any | None = None,
+    interaction: Any | None = None,
 ) -> None:
     """Route a Discord message to run_pipeline() and post the memo as a thread."""
+    import discord
+
     global _last_task, _last_ticker
 
     display_task = task if len(task) <= 80 else task[:77] + "..."
-    target = thread or channel
-    ack = await target.send(
-        f"🔬 Running pipeline for: `{display_task}`\nExpected: 60–120 seconds."
-    )
+    use_interaction = interaction is not None and thread is None
+    try:
+        ack = await _discord_post(
+            f"🔬 Starting research on `{display_task}`…",
+            interaction=interaction if use_interaction else None,
+            channel=channel if not use_interaction else None,
+            thread=thread if not use_interaction else None,
+        )
+    except discord.Forbidden as exc:
+        raise LabConfigError(_channel_permission_hint(getattr(channel, "id", 0))) from exc
+
+    progress = DiscordProgressBoard(ack, display_task)
+
+    async def on_progress(step: str, event: str, meta: dict[str, Any]) -> None:
+        if event == "queue":
+            progress.set_queue(meta.get("steps") or [])
+        elif event == "start":
+            await progress.mark_start(step)
+        elif event == "done":
+            await progress.mark_done(step, **meta)
 
     pipeline_task = task
     if feedback_context:
         pipeline_task = f"[Feedback]\n{feedback_context}\n\n{task}"
 
     try:
-        result = await run_pipeline(pipeline_task, config, prompts)
+        result = await run_pipeline(
+            pipeline_task, config, prompts, on_progress=on_progress
+        )
     except Exception as exc:
-        await ack.edit(content=f"❌ Pipeline failed: {exc}")
+        await _discord_edit(ack, f"❌ Pipeline failed: {exc}")
         return
 
     if result.get("status") == "failed" or not result.get("final_memo"):
@@ -1512,11 +2132,12 @@ async def handle_discord_message(
             for key, val in steps.items()
         }
         failed = result.get("status", "failed")
-        await ack.edit(
-            content=(
+        await _discord_edit(
+            ack,
+            (
                 f"❌ Pipeline error at step `{failed}` — no memo produced.\n"
                 f"```json\n{json.dumps(step_summary, indent=2)[:1500]}\n```"
-            )
+            ),
         )
         return
 
@@ -1538,39 +2159,76 @@ async def handle_discord_message(
             f"Divergence: {fields['divergence']}"
         )
 
-    parent_msg = await channel.send(parent_text[:1990])
+    parent_msg = await _discord_post(
+        parent_text,
+        interaction=interaction if use_interaction else None,
+        channel=channel if not use_interaction else None,
+        thread=thread if not use_interaction else None,
+    )
     thread_name = f"{fields['ticker']} — {date.today().isoformat()}"
-    memo_thread = await parent_msg.create_thread(
-        name=thread_name[:100],
-        auto_archive_duration=10080,
+    memo_thread = await _create_memo_thread(
+        channel,
+        parent_msg,
+        thread_name,
+        use_interaction=use_interaction,
     )
 
     sections = parse_memo_sections(memo_text)
     title_by_num = dict(MEMO_SECTION_TITLES)
+
+    async def _post_section(text: str) -> None:
+        if memo_thread is not None:
+            try:
+                for chunk in format_discord_message(text):
+                    await memo_thread.send(chunk)
+                return
+            except discord.Forbidden:
+                pass
+        for chunk in format_discord_message(text):
+            await _discord_post(
+                chunk,
+                interaction=interaction if use_interaction else None,
+                channel=channel if not use_interaction else None,
+                thread=thread if not use_interaction else None,
+                wait=False,
+            )
+
     if "full" in sections:
-        for chunk in format_discord_message(sections["full"]):
-            await memo_thread.send(chunk)
+        await _post_section(sections["full"])
     else:
         for num, body in sections.items():
             title = title_by_num.get(num, f"Section {num}")
             section_text = f"**{num}. {title}**\n\n{body.strip()}"
-            for chunk in format_discord_message(section_text):
-                await memo_thread.send(chunk)
+            await _post_section(section_text)
 
-    await memo_thread.send(
+    footer = (
         "---\n"
         "Use `/rerun`, `/rerun-all`, `/lock <section>`, or `/macro <feedback>` to interact.\n"
-        "Reply in this thread to provide feedback for a re-run."
     )
-    await ack.edit(content="✅ Pipeline complete.")
+    if memo_thread is not None:
+        footer += "Reply in this thread to provide feedback for a re-run."
+    else:
+        footer += (
+            "Thread creation failed — grant **Create Public Threads**. "
+            "Use slash commands for feedback until View Channel is fixed."
+        )
+    await _post_section(footer)
+    await _discord_edit(
+        ack,
+        f"✅ **Pipeline complete** — `{display_task}`\nMemo posted below.",
+    )
 
 
 def _validate_discord_env() -> tuple[str, str, str]:
     load_dotenv(ROOT / ".env")
     load_dotenv()
-    token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
-    guild_id = os.getenv("DISCORD_GUILD_ID", "").strip()
-    channel_id = os.getenv("DISCORD_CHANNEL_ID", "").strip()
+
+    def _clean(val: str) -> str:
+        return val.strip().strip('"').strip("'")
+
+    token = _clean(os.getenv("DISCORD_BOT_TOKEN", ""))
+    guild_id = _clean(os.getenv("DISCORD_GUILD_ID", ""))
+    channel_id = _clean(os.getenv("DISCORD_CHANNEL_ID", ""))
     missing = [
         name
         for name, val in (
@@ -1586,6 +2244,15 @@ def _validate_discord_env() -> tuple[str, str, str]:
             + ", ".join(missing)
             + ". Local CLI works without Discord."
         )
+    for label, val in (
+        ("DISCORD_GUILD_ID", guild_id),
+        ("DISCORD_CHANNEL_ID", channel_id),
+    ):
+        if not val.isdigit():
+            raise LabConfigError(
+                f"{label} must be a numeric snowflake ID (got {val!r}). "
+                "Enable Developer Mode and copy the ID again."
+            )
     return token, guild_id, channel_id
 
 
@@ -1607,6 +2274,8 @@ def run_discord_mode() -> int:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 1
 
+    configure_provider_environment(config)
+
     guild_id = int(guild_id_str)
     channel_id = int(channel_id_str)
     guild_obj = discord.Object(id=guild_id)
@@ -1616,16 +2285,131 @@ def run_discord_mode() -> int:
     client = discord.Client(intents=intents)
     tree = app_commands.CommandTree(client)
 
+    async def _channel_for_interaction(interaction: discord.Interaction) -> Any | None:
+        return await _resolve_slash_channel(
+            client, guild_id, channel_id, interaction
+        )
+
+    async def _send_interaction_notice(
+        interaction: discord.Interaction, text: str
+    ) -> None:
+        try:
+            await interaction.followup.send(text[:1990], ephemeral=True)
+        except discord.HTTPException:
+            pass
+
+    async def _run_pipeline_cmd(
+        interaction: discord.Interaction,
+        task: str,
+        feedback_context: str | None,
+        started_msg: str,
+    ) -> None:
+        ch = await _channel_for_interaction(interaction)
+        if ch is None:
+            hint = await _channel_access_hint(
+                client, guild_id, channel_id, interaction=interaction
+            )
+            await _send_interaction_notice(interaction, hint)
+            return
+        await interaction.followup.send(started_msg, ephemeral=True)
+        try:
+            await handle_discord_message(
+                task,
+                ch,
+                None,
+                feedback_context,
+                config,
+                prompts,
+                client=client,
+                interaction=interaction,
+            )
+        except LabConfigError as exc:
+            await _send_interaction_notice(interaction, f"❌ {exc}")
+        except discord.Forbidden:
+            await _send_interaction_notice(
+                interaction, f"❌ {_missing_access_setup_hint()}"
+            )
+        except Exception as exc:
+            await _send_interaction_notice(
+                interaction, f"❌ Pipeline posted with errors: {exc}"
+            )
+
     @client.event
     async def on_ready() -> None:
-        await tree.sync(guild=guild_obj)
+        guild = client.get_guild(guild_id)
+        if guild is None:
+            msg = (
+                f"Bot is not in server {guild_id_str} (DISCORD_GUILD_ID). "
+                "Re-invite with scopes bot + applications.commands, or fix the guild ID."
+            )
+            print(json.dumps({"status": "discord_bridge_error", "error": msg}), file=sys.stderr)
+            await client.close()
+            return
+
+        ch = client.get_channel(channel_id)
+        if ch is None:
+            print(
+                json.dumps(
+                    {
+                        "status": "discord_bridge_warning",
+                        "warning": (
+                            f"Channel {channel_id_str} not visible. "
+                            "Check DISCORD_CHANNEL_ID and bot channel permissions."
+                        ),
+                    }
+                ),
+                file=sys.stderr,
+            )
+        elif isinstance(ch, discord.TextChannel):
+            me = await _ensure_bot_member(guild, client)
+            if me is not None:
+                perms = ch.permissions_for(me)
+                print(
+                    json.dumps(
+                        {
+                            "status": "discord_channel_permissions",
+                            "channel_id": channel_id_str,
+                            "can_send": _member_can_post(perms),
+                            "can_create_threads": _perms_can_create_threads(perms),
+                            "view_channel": bool(perms.view_channel),
+                            "send_messages": bool(perms.send_messages),
+                            "create_public_threads": bool(
+                                perms.create_public_threads
+                            ),
+                        }
+                    ),
+                    flush=True,
+                )
+
+        try:
+            synced = await tree.sync(guild=guild_obj)
+        except discord.Forbidden:
+            msg = (
+                "403 Missing Access (50001) syncing slash commands. "
+                "Re-invite the bot using BOTH scopes: bot AND applications.commands. "
+                "Developer Portal → OAuth2 → URL Generator → select those scopes → "
+                "use the generated invite link. Guild ID must be the server ID, not the channel ID."
+            )
+            print(json.dumps({"status": "discord_bridge_error", "error": msg}), file=sys.stderr)
+            await client.close()
+            return
+        except discord.HTTPException as exc:
+            print(
+                json.dumps({"status": "discord_bridge_error", "error": str(exc)}),
+                file=sys.stderr,
+            )
+            await client.close()
+            return
+
         print(
             json.dumps(
                 {
                     "status": "discord_bridge_running",
                     "bot": str(client.user),
+                    "guild": guild.name,
                     "guild_id": guild_id_str,
                     "channel_id": channel_id_str,
+                    "commands_synced": len(synced),
                 }
             ),
             flush=True,
@@ -1649,7 +2433,19 @@ def run_discord_mode() -> int:
             feedback_context=message.content,
             config=config,
             prompts=prompts,
+            client=client,
         )
+
+    @tree.command(
+        name="lab-check",
+        description="Show bot channel permissions and configured channel IDs",
+        guild=guild_obj,
+    )
+    async def lab_check_cmd(interaction: discord.Interaction) -> None:
+        report = await _channel_permission_report(
+            client, guild_id, channel_id, interaction=interaction
+        )
+        await interaction.response.send_message(report[:1990], ephemeral=True)
 
     @tree.command(
         name="research",
@@ -1657,13 +2453,13 @@ def run_discord_mode() -> int:
         guild=guild_obj,
     )
     async def research_cmd(interaction: discord.Interaction, task: str) -> None:
-        await interaction.response.defer()
-        ch = client.get_channel(channel_id)
-        if ch is None:
-            await interaction.followup.send("Configured channel not found.")
-            return
-        await handle_discord_message(task, ch, None, None, config, prompts)
-        await interaction.followup.send("Pipeline started — see channel for progress.")
+        await interaction.response.defer(ephemeral=True)
+        await _run_pipeline_cmd(
+            interaction,
+            task,
+            None,
+            f"Pipeline started in <#{interaction.channel.id}>.",
+        )
 
     @tree.command(
         name="rerun",
@@ -1671,25 +2467,18 @@ def run_discord_mode() -> int:
         guild=guild_obj,
     )
     async def rerun_cmd(interaction: discord.Interaction, section: str = "all") -> None:
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         if not _last_task:
             await interaction.followup.send(
                 "No previous task found. Use `/research <task>` first."
             )
             return
-        ch = client.get_channel(channel_id)
-        if ch is None:
-            await interaction.followup.send("Configured channel not found.")
-            return
-        await handle_discord_message(
+        await _run_pipeline_cmd(
+            interaction,
             _last_task,
-            ch,
-            None,
             f"Re-run requested for section: {section}",
-            config,
-            prompts,
+            "Re-run started.",
         )
-        await interaction.followup.send("Re-run started.")
 
     @tree.command(
         name="rerun-all",
@@ -1697,18 +2486,13 @@ def run_discord_mode() -> int:
         guild=guild_obj,
     )
     async def rerun_all_cmd(interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         if not _last_task:
             await interaction.followup.send(
                 "No previous task found. Use `/research <task>` first."
             )
             return
-        ch = client.get_channel(channel_id)
-        if ch is None:
-            await interaction.followup.send("Configured channel not found.")
-            return
-        await handle_discord_message(_last_task, ch, None, None, config, prompts)
-        await interaction.followup.send("Full re-run started.")
+        await _run_pipeline_cmd(interaction, _last_task, None, "Full re-run started.")
 
     @tree.command(
         name="lock",
@@ -1734,17 +2518,12 @@ def run_discord_mode() -> int:
         guild=guild_obj,
     )
     async def macro_cmd(interaction: discord.Interaction, feedback: str) -> None:
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         ticker = detect_ticker(_last_task or "")
         task = f"Re-run macro step with feedback: {feedback}"
         if ticker:
             task += f" for {ticker}"
-        ch = client.get_channel(channel_id)
-        if ch is None:
-            await interaction.followup.send("Configured channel not found.")
-            return
-        await handle_discord_message(task, ch, None, feedback, config, prompts)
-        await interaction.followup.send("Macro re-run started.")
+        await _run_pipeline_cmd(interaction, task, feedback, "Macro re-run started.")
 
     try:
         client.run(token)
@@ -1793,7 +2572,7 @@ def test_discord_helpers() -> int:
     lock_path = test_dir / COVERAGE_STATE_FILES["locked_sections"]
     lock_ok = lock_path.is_file()
 
-    slash_commands = ["research", "rerun", "rerun-all", "lock", "macro"]
+    slash_commands = ["research", "rerun", "rerun-all", "lock", "macro", "lab-check"]
     print(json.dumps({"parse_memo_sections": sections}, indent=2))
     print(json.dumps({"extract_memo_header": header}, indent=2))
     print(
@@ -1819,6 +2598,8 @@ async def run_cli(task: str) -> int:
     except LabConfigError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 1
+
+    configure_provider_environment(config)
 
     try:
         output = await run_pipeline(task, config, prompts)
