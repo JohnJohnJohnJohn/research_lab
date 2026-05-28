@@ -85,12 +85,13 @@ Architectural decisions made beyond what SPEC.md specifies, with rationale.
 | v0.1.1 coverage | `coverage.md` is a thin dispatch index only (<40 lines); per-name depth lives in `coverage_state/[TICKER]/`. | Injected wholesale into Director context every run; flat per-name detail would swamp context window at scale. |
 | v0.1.1 lab.py | `detect_ticker()` + `load_coverage_state()` + `build_coverage_context()` inject task-scoped state before `Runner.run()`. | Director gets thin `coverage.md` always; relevant `coverage_state/` files only when ticker detected in task. `memo_history/` excluded — Coverage Agent handles memo injection. |
 
-### Proposed SPEC.md §13 edits (not applied — human confirmation required)
+### Proposed SPEC.md edits (applied 2026-05-28)
 
-| Item | Proposed change | Rationale |
-|------|-----------------|-----------|
-| coverage_state layout | Align §13 filenames with v0.1 operational layout or document mapping in lab.py | See Decisions Log v0.1.0 Coverage |
-| locked_sections.md | Add to §13 schema | Cross-run 📌 persistence |
+| Item | Proposed change | Status |
+|------|-----------------|--------|
+| §2 coverage.md description | Thin dispatch index; per-name depth in `coverage_state/[TICKER]/` | Applied |
+| §13 coverage_state layout | `standing_thesis.md`, `kpis.md`, `regime_history.md`, `locked_sections.md`, `memo_history/` | Applied |
+| §13 prompts/coverage path | `agent.md` (replaces `template.md`) | Applied |
 
 ### Proposed lab.md edits (not applied — human confirmation required)
 

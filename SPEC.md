@@ -21,7 +21,7 @@ Augment institutional research process with an AI team operating at machine scal
 The entire human-editable surface is two markdown files. Everything else is agent-owned or self-describing capability code.
 
 - **`lab.md`** — research mandate. Stable doctrine: scope, source hierarchy, regional awareness questions (not answers), factor discovery protocol, quality gates. Edited rarely. Version-controlled. Evolves with market cycles.
-- **`coverage.md`** — active context. Watchlist (positions, monitoring, themes), open research questions, macro snapshot, priority queue. Edited weekly or on portfolio change.
+- **`coverage.md`** — active context. Thin dispatch index: one row per covered name (ticker, sector, priority, conviction), one-liner macro regime tags, and a priority queue. Edited weekly or on portfolio change. Stays small permanently — per-name depth (KPIs, thesis, regime history, locked sections) lives in `coverage_state/[TICKER]/` and is loaded on demand by the Coverage Agent.
 
 Every research output is stamped with the `lab.md` version + `coverage.md` hash that produced it.
 
@@ -264,13 +264,14 @@ research_lab/
 ├── coverage.md                 # active context (human-edited)
 │
 ├── coverage_state/             # machine-owned per-ticker memory
-│   └── [TICKER]/{thesis.md, kpis.json, regimes/, memos/}
+│   └── [TICKER]/{standing_thesis.md, kpis.md, regime_history.md,
+               locked_sections.md, memo_history/}
 │
 ├── prompts/                    # role-based system prompts
 │   ├── director.md
 │   ├── regional/{us, hk, china_ah}.md
 │   ├── specialists/{sector, macro, valuation, risk}.md
-│   └── coverage/template.md
+│   └── coverage/agent.md
 │
 ├── mcp_servers/                # one folder per MCP
 │   └── {bloomberg, eodhd, edgar, hkex, cninfo, broker_research, news}/
